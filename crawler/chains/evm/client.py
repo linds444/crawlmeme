@@ -58,6 +58,7 @@ _ARCHIVE = re.compile(r"archive|missing trie node|header not found|state.*not av
 _ADDRESSLESS = re.compile(r"specify an address|address.*required|requires an address", re.I)
 _SPAN_NUM = re.compile(r"only (\d+) are allowed|ranges over (\d+)|up to a (\d+) block range|(\d+) block range", re.I)
 _RETRY_RANGE = re.compile(r"retry with the range (\d+)-(\d+)", re.I)
+_NOT_ENABLED = re.compile(r"not enabled for this app|network is not enabled|is not enabled for this key", re.I)
 
 
 def classify(code, message):
@@ -109,6 +110,7 @@ class Provider:
         self.max_span, self.addressless, self.archive_depth = max_span, addressless, archive_depth
         self.max_span_addressless = max_span_addressless   # address-less queries often have a tighter limit
         self.state_depth = state_depth
+        self.disabled = False           # refuses every request with this key (network not enabled): never asked again
         # methods this endpoint refuses → until when: declared ones (measured, e.g. receipts on publicnode,
         # eth_getLogs on Binance's dataseed nodes) forever, ones learned from HTTP 401/403 for DENY_S
         self._denied = {m: float("inf") for m in (deny or ())}
@@ -138,6 +140,8 @@ class Provider:
                 self._denied[method] = time.time() + seconds
 
     def serves(self, need, head, lenient=False):
+        if self.disabled:
+            return False
         if need.get("method") in (self.denied_forever if lenient else self.denied):
             return False
         if need.get("asset_transfers") and not self.asset_transfers:
@@ -193,7 +197,7 @@ class Provider:
             n = self.stats["requests"]
             return {"name": self.name, "max_span": self.max_span, "addressless": self.addressless,
                     "archive_depth": self.archive_depth, "state_depth": self.state_depth,
-                    "denied": sorted(self.denied),
+                    "denied": sorted(self.denied), "disabled": self.disabled,
                     "asset_transfers": self.asset_transfers,
                     "cooling": self.cooling(time.time()),
                     **{k: v for k, v in self.stats.items() if k != "latency_ms"},
@@ -237,6 +241,10 @@ class EvmClient:
                 continue
             self._count(p, t0, error=status >= 400)
             if status in (401, 403):                       # this endpoint refuses the method: no retry, no cooldown
+                text = raw.decode(errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
+                if _NOT_ENABLED.search(text):              # e.g. Alchemy app without this network: refuses everything
+                    p.disabled = True
+                    raise _ProviderDown(f"{p.name}: network not enabled for this API key (HTTP {status})")
                 raise _ProviderDown(f"{p.name}: HTTP {status}", denied=True)
             if status == 429:
                 self._rate_limited(p)
@@ -386,9 +394,15 @@ class EvmClient:
         return self.call("eth_call", [{"to": to, "data": data}, block if isinstance(block, str) else hex(block)], need)
 
     def iter_logs(self, lo, hi, address=None, topics=None):
-        """eth_getLogs pages over [lo, hi] in block order. Windows are sized for the provider that will be asked
-        first (its known span limit); a refusal teaches that provider its limit and the window is re-planned.
-        Full pages (LOG_CAP, possibly truncated) are split and re-read. Memory: one page at a time."""
+        """eth_getLogs pages over [lo, hi] in block order (see iter_log_windows)."""
+        for _, _, logs in self.iter_log_windows(lo, hi, address, topics):
+            yield logs
+
+    def iter_log_windows(self, lo, hi, address=None, topics=None):
+        """(a, b, logs) for consecutive block windows covering [lo, hi] in order: when (a, b, ·) is yielded, every
+        block ≤ b has been read — a safe checkpoint for resumable indexing. Windows are sized for the provider that
+        will be asked first (its known span limit); a refusal teaches that provider its limit and the window is
+        re-planned. Full pages (LOG_CAP, possibly truncated) are split and re-read. Memory: one page at a time."""
         self.head()
         stack = [(lo, hi)]
         replans = 0
@@ -423,7 +437,7 @@ class EvmClient:
                 mid = (a + b) // 2
                 stack.append((mid + 1, b)); stack.append((a, mid))
                 continue
-            yield logs
+            yield a, b, logs
 
     def get_logs(self, lo, hi, address=None, topics=None):
         return [lg for page in self.iter_logs(lo, hi, address, topics) for lg in page]

@@ -20,10 +20,10 @@ Plugin interface (module or object):
   buy_quote(ad, token, logs, transfer, launch) → (is_buy, quote_in | None);
   info(ad, token, launch) → dict for the result (pool, fees, curve progress, …).
 """
-import os, threading
+import os, threading, time
 
 from crawler.chains import priority
-from crawler.chains.evm import abi
+from crawler.chains.evm import abi, history_index
 from crawler.chains.evm.client import NoProvider
 from crawler.chains.evm.keccak import topic
 
@@ -42,6 +42,30 @@ class HistoryUnavailable(Exception):
 
 class HistoryTooLarge(Exception):
     """Token history longer than SCAN_MAX_LOGS transfers."""
+
+
+class HistoryIndexing(Exception):
+    """The token history did not fit in this scan's budget: what was read is checkpointed in the history index and
+    the next scan continues from there. progress — share of the block range read (0..1)."""
+
+    def __init__(self, token, progress, transfers):
+        super().__init__(f"indexing {token}: {progress:.0%}")
+        self.token, self.progress, self.transfers = token, progress, transfers
+
+
+def conservation(transfers, supply):
+    """Balances rebuilt from the transfers must hold exactly totalSupply (mints come from and burns go to the zero
+    address, so the sum over every other address is the supply) and no balance may be negative.
+    Fails for missing transfers — and for tokens whose balances change without Transfer events (rebasing,
+    reflection): those are reported as unverified, never silently trusted."""
+    bal = {}
+    for t in transfers:
+        bal[t["frm"]] = bal.get(t["frm"], 0) - t["amount"]
+        bal[t["to"]] = bal.get(t["to"], 0) + t["amount"]
+    bal.pop(abi.ZERO, None)
+    held = sum(bal.values())
+    negative = sum(1 for v in bal.values() if v < 0)
+    return {"ok": held == supply and not negative, "held": held, "supply": supply, "negative_balances": negative}
 
 
 try:
@@ -63,7 +87,7 @@ class EvmTokenAdapter:
         self.LAUNCHPAD = plugin.NAME
         self.REQUESTS, self.RATE_LIMITED = client.REQUESTS, client.RATE_LIMITED
         self.RPS = max((p.rps for p in client.providers), default=8)
-        self._launch, self._state, self._ts, self._receipts, self._code = {}, {}, {}, {}, {}
+        self._launch, self._state, self._ts, self._receipts, self._code, self._first = {}, {}, {}, {}, {}, {}
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ identification
@@ -157,9 +181,39 @@ class EvmTokenAdapter:
 
     # ------------------------------------------------------------------ launch location
     def _has_asset_transfers(self):
-        return any(p.asset_transfers for p in self.client.providers)
+        return any(p.asset_transfers and not p.disabled for p in self.client.providers)
+
+    def first_transfer_to(self, token, addresses, from_block):
+        """Earliest transfer of the token to any of addresses since from_block (e.g. liquidity added to a pool), or
+        None. Logs where a provider covers the range, otherwise the Transfers API (one request per address)."""
+        addresses = sorted({a.lower() for a in addresses})
+        if self._logs_cover(from_block):
+            try:
+                for page in self.client.iter_logs(from_block, self.client.head(), address=token,
+                                                  topics=[abi.TRANSFER_TOPIC, None,
+                                                          [abi.topic_for(a) for a in addresses]]):
+                    ts = [t for lg in page if (t := self._parse(lg))]
+                    if ts:
+                        return min(ts, key=lambda t: (t["block"], t["log_index"]))
+                return None
+            except NoProvider:
+                pass
+        if not self._has_asset_transfers():
+            return None
+        best = None
+        for a in addresses:
+            rows, _ = self.client.asset_transfers(max_count=1, contractAddresses=[token], toAddress=a,
+                                                  fromBlock=from_block, toBlock="latest", order="asc")
+            if rows and (best is None or int(rows[0]["blockNum"], 16) < best["block"]):
+                best = self._row_transfer(rows[0])
+        return best
 
     def first_transfer(self, token):
+        if token not in self._first:
+            self._first[token] = self._first_transfer(token)
+        return self._first[token]
+
+    def _first_transfer(self, token):
         """{"block", "tx", "frm", "to", "amount", "log_index"} of the token's first Transfer (the mint at creation),
         or None when no configured provider can see it. Sources, cheapest first:
           1. Alchemy Transfers API: first transfer of the contract (one request)
@@ -176,20 +230,23 @@ class EvmTokenAdapter:
             except NoProvider:
                 pass
         head = self.client.head()
-        if any(p.archive_depth is None for p in self.client.providers):
+        if any(p.archive_depth is None and not p.disabled for p in self.client.providers):
             try:
                 found = self._mint_backwards(token, head)
                 if found:
                     return found
             except NoProvider:
                 pass
-        if any(p.state_depth is None for p in self.client.providers):
+        if any(p.state_depth is None and not p.disabled for p in self.client.providers):
             b = self.creation_block(token)
             if b is not None:
                 return self._first_log_in(token, b, b)
-        depth = max((p.archive_depth or 0 for p in self.client.providers), default=0)
+        depth = max((p.archive_depth or 0 for p in self.client.providers if not p.disabled), default=0)
         if depth:
-            first = self._first_log_in(token, max(0, head - depth), head)
+            try:
+                first = self._first_log_in(token, max(0, head - depth), head)
+            except NoProvider:
+                return None
             if first and first["frm"] == abi.ZERO:
                 return first
         return None
@@ -269,41 +326,117 @@ class EvmTokenAdapter:
     # ------------------------------------------------------------------ token history
     def _logs_cover(self, lo):
         head = self.client.head()
-        return any(p.archive_depth is None or lo >= head - p.archive_depth for p in self.client.providers)
+        return any(not p.disabled and (p.archive_depth is None or lo >= head - p.archive_depth)
+                   for p in self.client.providers)
 
-    def token_transfers(self, token, from_block, to_block=None, cap=SCAN_MAX_LOGS):
-        """All transfers of the token in [from_block, to_block] in chain order (see module doc for the source)."""
-        hi = self.client.head() if to_block is None else to_block
-        out = []
-        if self._logs_cover(from_block):
+    def token_transfers(self, token, from_block, to_block=None, cap=SCAN_MAX_LOGS, until=None):
+        """(transfers in chain order, info) for [from_block, head]. Reads only what the history index
+        (evm/history_index.py) does not have yet; source per provider capability (module doc).
+        until — unix time by which reading must stop: the progress is checkpointed at the last complete block window
+        and HistoryIndexing is raised (the next scan resumes from there).
+        info: {"source": "logs" | "asset_transfers", "cached_until", "read_from", "verified", "conservation": …}."""
+        head = self.client.head() if to_block is None else to_block
+        idx = history_index.get()
+        hit = idx.load(self.CHAIN, token) if idx else None
+        transfers, start, cached_until = [], from_block, None
+        if hit and hit["from_block"] == from_block and hit["head"] <= head:
+            # the last blocks the cache read were near its head then: read them again (lagging node, short reorg)
+            keep = max(from_block - 1, hit["head"] - history_index.REORG_LAG)
+            transfers = [t for t in hit["transfers"] if t["block"] <= keep]
+            start, cached_until = keep + 1, keep
+        source, done_to = self._read_history(token, start, head, transfers, cap, until, from_block)
+        if done_to < head:   # cut by the budget: checkpoint and let the next scan continue
+            if idx:
+                idx.save(self.CHAIN, token, from_block, done_to, transfers, complete=False, verified=False)
+            raise HistoryIndexing(token, (done_to - from_block + 1) / max(1, head - from_block + 1), len(transfers))
+        transfers.sort(key=lambda t: (t["block"], t["log_index"]))
+        supply = self.token_supply(token)
+        check = conservation(transfers, supply)
+        if check["ok"]:   # the sum survives lost holder-to-holder transfers: check the balances that matter too
+            check |= self.check_balances(token, transfers, head)
+            check["ok"] = check["balances_ok"]
+        if not check["ok"] and cached_until is not None:   # the cached part may be stale or broken: read it all again
+            if idx:
+                idx.drop(self.CHAIN, token)
+            return self.token_transfers(token, from_block, to_block, cap, until)
+        if idx:
+            idx.save(self.CHAIN, token, from_block, head, transfers, complete=True, verified=check["ok"])
+        return transfers, {"source": source, "cached_until": cached_until, "read_from": start, "head": head,
+                           "supply": supply, "verified": check["ok"], "conservation": check}
+
+    BALANCE_CHECK_N = 25      # largest rebuilt balances checked against balanceOf at the head block
+
+    def check_balances(self, token, transfers, head):
+        """Rebuilt balances of the largest holders vs balanceOf(holder) at block head (one batch).
+        {"balances_ok", "balances_checked", "mismatches": [address]}; a provider that cannot serve the state at head
+        → balances_ok None (not verified, not failed)."""
+        bal = {}
+        for t in transfers:
+            bal[t["frm"]] = bal.get(t["frm"], 0) - t["amount"]
+            bal[t["to"]] = bal.get(t["to"], 0) + t["amount"]
+        bal.pop(abi.ZERO, None)
+        top = sorted((a for a, v in bal.items() if v > 0), key=lambda a: -bal[a])[:self.BALANCE_CHECK_N]
+        if not top:
+            return {"balances_ok": True, "balances_checked": 0, "mismatches": []}
+        try:
+            res = self.client.batch([("eth_call", [{"to": token, "data": abi.call_data("0x70a08231", a)}, hex(head)])
+                                     for a in top], need={"state_block": head})
+        except NoProvider:
+            return {"balances_ok": None, "balances_checked": 0, "mismatches": []}
+        bad = [a for a, r in zip(top, res) if r is None or abi.u256(abi.words(r)[0]) != bal[a]]
+        return {"balances_ok": not bad, "balances_checked": len(top), "mismatches": bad}
+
+    def _read_history(self, token, lo, hi, out, cap, until, from_block):
+        """Append transfers of [lo, hi] to out. Returns (source, last block fully read)."""
+        if lo > hi:
+            return "cache", hi
+        if self._logs_cover(lo):
+            n0 = len(out)
             try:
-                for page in self.client.iter_logs(from_block, hi, address=token, topics=[abi.TRANSFER_TOPIC]):
-                    for lg in page:
-                        t = self._parse(lg)
-                        if t:
-                            out.append(t)
+                done = lo - 1
+                for a, b, logs in self.client.iter_log_windows(lo, hi, address=token, topics=[abi.TRANSFER_TOPIC]):
+                    out.extend(t for lg in logs if (t := self._parse(lg)))
+                    done = b
                     if cap and len(out) > cap:
                         raise HistoryTooLarge(len(out))
-                out.sort(key=lambda t: (t["block"], t["log_index"]))
-                return out
-            except NoProvider:
-                out = []
+                    if until is not None and time.time() >= until and b < hi:
+                        return "logs", done
+                return "logs", hi
+            except NoProvider:   # logs became unavailable midway: drop this read, use the Transfers API for [lo, hi]
+                del out[n0:]
         if not self._has_asset_transfers():
             raise HistoryUnavailable(f"{self.net.name}: the token history starts at block {from_block}, older than "
                                      f"the configured RPC providers serve; set ALCHEMY_API_KEY or "
                                      f"{self.CHAIN.upper()}_RPC_URLS with an archive node")
-        rows, more = self.client.asset_transfers(max_count=(cap + 1) if cap else None, contractAddresses=[token],
-                                                 fromBlock=from_block, toBlock=hi, order="asc")
-        if more or (cap and len(rows) > cap):
-            raise HistoryTooLarge(len(rows))
-        out = [self._row_transfer(r) for r in rows]
-        out.sort(key=lambda t: (t["block"], t["log_index"]))
-        return out
+        rows, key, last = [], None, lo - 1
+        while True:
+            q = {"contractAddresses": [token], "fromBlock": lo, "toBlock": hi, "order": "asc"}
+            res = self.client.call("alchemy_getAssetTransfers", [dict(
+                {"category": ["erc20"], "withMetadata": False, "excludeZeroValue": False, "maxCount": hex(1000)},
+                **{k: (hex(v) if isinstance(v, int) else v) for k, v in q.items()}, **({"pageKey": key} if key else {}))],
+                {"asset_transfers": True})
+            page = res.get("transfers") or []
+            rows += page
+            key = res.get("pageKey")
+            if cap and len(out) + len(rows) > cap:
+                raise HistoryTooLarge(len(out) + len(rows))
+            if not key:
+                out.extend(self._row_transfer(r) for r in rows)
+                return "asset_transfers", hi
+            if until is not None and time.time() >= until and page:
+                # checkpoint at the last block fully contained in what was read (the next page may continue it)
+                last = int(page[-1]["blockNum"], 16) - 1
+                out.extend(self._row_transfer(r) for r in rows if int(r["blockNum"], 16) <= last)
+                return "asset_transfers", max(lo - 1, last)
+
+    HISTORY_RESERVE = 12.0    # seconds of the scan budget kept for entries, wallet histories and detect
 
     def token_facts(self, token, launch, deadline=None):
         token = token.lower()
-        transfers = self.token_transfers(token, launch["block"])
-        supply = self.token_supply(token)
+        until = None if deadline is None else deadline - self.HISTORY_RESERVE
+        # history from the mint (DEX tokens: launch["block"] is when liquidity was added, later than the mint)
+        transfers, hist = self.token_transfers(token, launch.get("history_from", launch["block"]), until=until)
+        supply = hist["supply"]
         excluded = set(launch["infra"]) | set(launch["market"]) | set(self.net.burn)
         bal = {}
         for t in transfers:
@@ -313,7 +446,8 @@ class EvmTokenAdapter:
         liq = self.plugin.liquidity(self, token, launch, circulating, bal)
         facts = {"supply": supply, "transfers": transfers, "excluded": excluded, "market": set(launch["market"]),
                  "base": None, "reserve": liq.get("reserve", 0), "reserve_ok": liq.get("reserve_ok", False),
-                 "launchpad": self.plugin.NAME, self.plugin.NAME: self.plugin.info(self, token, launch)}
+                 "launchpad": self.plugin.NAME, self.plugin.NAME: self.plugin.info(self, token, launch),
+                 "history_info": {k: v for k, v in hist.items() if k != "supply"}}
         for k in ("impact_curve", "q_factor", "locked", "dev"):
             if liq.get(k) is not None:
                 facts[k] = liq[k]

@@ -731,8 +731,9 @@ def is_contract(addresses, chunk=100):
     for i in range(0, len(need), chunk):
         part = need[i:i + chunk]
         for a, code in zip(part, rpc_batch([("eth_getCode", [a, "latest"]) for a in part])):
-            if code is not None:
-                _CODE[a] = code not in ("0x", "0x0", "")
+            if code is not None:   # EIP-7702 delegation code: still a wallet (as in is_contract_at)
+                code = code.lower()
+                _CODE[a] = code not in ("0x", "0x0", "") and not code.startswith(DELEGATION_PREFIX)
     return {a: _CODE.get(a, False) for a in addrs}
 
 

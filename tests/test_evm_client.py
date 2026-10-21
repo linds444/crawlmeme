@@ -226,6 +226,16 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(seen, [4.0, 4.0])                  # two providers, one attempt each, the given timeout
         self.assertLess(time.time() - t0, 1.0)              # no backoff sleeps
 
+    def test_network_not_enabled_disables_provider(self):
+        class NotEnabled(FakeNode):
+            def __call__(self, url, body, timeout):
+                return 403, b'{"error":{"code":-32600,"message":"BNB_MAINNET is not enabled for this app."}}'
+        a, b = NotEnabled(), FakeNode()
+        c, (pa, _) = client(a, b)
+        self.assertEqual(c.head(), b.head)
+        self.assertTrue(pa.disabled)
+        self.assertFalse(pa.serves({"method": "eth_call"}, None))
+
     def test_no_provider_for_asset_transfers(self):
         c, _ = client(FakeNode())
         with self.assertRaises(NoProvider):

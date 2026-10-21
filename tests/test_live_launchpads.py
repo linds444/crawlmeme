@@ -18,7 +18,7 @@ from unittest import mock
 
 LIVE = os.environ.get("CRAWLER_LIVE") == "1"
 ENV = {"CLANKER_ENABLED": "true", "FOURMEME_ENABLED": "true", "FLAP_ENABLED": "true", "BSC_ENABLED": "true",
-       "BASE_ENABLED": "true"}
+       "BASE_ENABLED": "true", "DEX_ENABLED": "true"}
 if LIVE:
     os.environ.setdefault("CRAWLER_RPC", "https://rpc.mainnet.chain.robinhood.com")
 
@@ -96,6 +96,38 @@ class TestLive(unittest.TestCase):
         from crawler.chains.evm.launchpads import flap
         tok = self.fresh("bsc", flap.PORTALS["bsc"], flap.TOKEN_CREATED, 3, flap.TOKEN_BOUGHT, 1, back=3000)
         self.scan_and_check(tok, "bsc", "flap")
+
+    def test_robinhood_uniswap_v2(self):
+        """A token launched straight into a Uniswap V2 pair against WETH (no launchpad): the DEX fallback."""
+        from crawler.chains.evm import abi, networks
+        from crawler.chains.evm.keccak import topic
+        from crawler.chains.evm.launchpads import dex
+        c = networks.client("robinhood")
+        h, weth = c.head(), networks.NETWORKS["robinhood"].wrapped_native
+        pairs = []
+        for page in c.iter_logs(h - 1_000_000, h, address=dex.DEXES["robinhood"][0]["v2"],
+                                topics=[topic("PairCreated(address,address,address,uint256)")]):
+            for lg in page:
+                t0, t1 = abi.addr(lg["topics"][1]), abi.addr(lg["topics"][2])
+                tok = t1 if t0 == weth else t0 if t1 == weth else None
+                if tok and not tok.endswith(("7777", "8888", "ba3")):     # not Flap / Bankr
+                    pairs.append(tok)
+        self.assertTrue(pairs)
+        counts = Counter()
+        for tok in pairs[-20:]:
+            for page in c.iter_logs(h - 1_000_000, h, address=tok, topics=[abi.TRANSFER_TOPIC]):
+                counts[tok] += len(page)
+        for tok, _ in counts.most_common(5):   # Pons tokens migrate to V4, Clanker uses V4: the first V2-only wins
+            from crawler import engine
+            try:
+                res = engine.scan(tok)
+            except engine.ScanError:
+                continue
+            if res.get("launchpad") == "dex":
+                self.assertTrue(res["dex"]["pools"])
+                self.scan_and_check(tok, "robinhood", "dex")
+                return
+        self.skipTest("no recent V2-only token without a launchpad")
 
     def test_bsc_clanker(self):
         """Clanker launches on BNB are rare: skipped when none happened inside the public node's window."""

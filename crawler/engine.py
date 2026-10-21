@@ -16,6 +16,7 @@ from crawler.chains import priority
 from crawler.chains import robinhood as ch
 from crawler.chains import solana as sol
 from crawler import detect as d
+from crawler import coverage
 from crawler import market
 BUDGET = 25.0          # seconds for the whole scan (README)
 DETECT_RESERVE = 1.0   # seconds kept for detect and events after reading wallets
@@ -39,7 +40,7 @@ CHAINS = {"robinhood": ch, "solana": sol}
 NATIVE = {"robinhood": ("ETH", 10 ** 18), "solana": ("SOL", 10 ** 9), "bsc": ("BNB", 10 ** 18),
           "base": ("ETH", 10 ** 18)}   # unit of eth_in
 NOT_LAUNCHPAD = {"robinhood": "not a Pons V2 token", "solana": "not a pump.fun token"}
-PAD_LABEL = {"clanker": "Clanker", "fourmeme": "four.meme", "flap": "Flap"}
+PAD_LABEL = {"clanker": "Clanker", "fourmeme": "four.meme", "flap": "Flap", "dex": "Uniswap/PancakeSwap pool"}
 NOT_LAUNCHPAD_FLAP = "not a Pons V2 or Flap token"   # Robinhood with FLAP_ENABLED
 TOO_LARGE = "token history too large"                  # Pons: more than ch.SCAN_MAX_LOGS transfers
 GT_NETWORK = {"robinhood": "robinhood", "solana": "solana", "bsc": "bsc", "base": "base"}
@@ -271,7 +272,17 @@ def _flags(s):
                             ("sniper", s["sniper"]), ("deployer", s["is_deployer"]), ("sold", s["sold"])) if on]
 
 
-def _reason(sc, base):
+def scan_depth():
+    """Top holders examined per scan: SCAN_DEPTH (default detect.TOP_N = 20, the V1 methodology; 5..100).
+    Solana reads its largest 20 accounts, so deeper scans apply to EVM chains (coverage says so)."""
+    try:
+        n = int(os.environ.get("SCAN_DEPTH", "").strip() or d.TOP_N)
+    except ValueError:
+        return d.TOP_N
+    return max(5, min(100, n))
+
+
+def _reason(sc, base, n=d.TOP_N):
     """Main reason for the verdict in one line."""
     if sc["band"] == d.TOO_EARLY:
         return f"fewer than {d.MIN_HOLDERS} holders ({base['holders_total']}) — too early or too late"
@@ -293,7 +304,7 @@ def _reason(sc, base):
                        else "virgin share unknown: most of the top couldn't be read"),
             "transfer": f"{m['transfer'] * 100:.1f}% of float received by transfer",
             "sniper": f"snipers hold {m['sniper'] * 100:.1f}% of float",
-            "concentration": f"top 20 hold {m['concentration'] * 100:.1f}% of float"}[k]
+            "concentration": f"top {n} hold {m['concentration'] * 100:.1f}% of float"}[k]
 
 
 def scan(token, emit=lambda e: None, chain=None):
@@ -368,7 +379,7 @@ def scan(token, emit=lambda e: None, chain=None):
         except evm_token.HistoryUnavailable as e:
             raise ScanError(str(e)) from None
     elif chain not in CHAINS:
-        raise ScanError(not_launchpad(chain))
+        launch = None    # BNB / Base without a launchpad match: the DEX fallback below
     elif bankr_state is not None:
         a = bankr
         launch = bankr.get_launch(token, bankr_state)
@@ -380,6 +391,12 @@ def scan(token, emit=lambda e: None, chain=None):
         launch = flap.get_launch(token, flap_state)
     else:
         launch = a.get_launch(token)
+    if launch is None and chain != "solana" and (evm_hit := registry.detect(chain, token, fallback=True)):
+        a = evm_hit[0]   # no launchpad: a token launched straight into a DEX pool
+        try:
+            launch = a.get_launch(token)
+        except evm_token.HistoryUnavailable as e:
+            raise ScanError(str(e)) from None
     if launch is None:
         raise ScanError(not_launchpad(chain))
     if est := late_established():
@@ -395,6 +412,9 @@ def scan(token, emit=lambda e: None, chain=None):
         raise ScanError(TOO_LARGE) from None
     except evm_token.HistoryUnavailable as e:   # older than every configured provider serves: no partial verdict
         raise ScanError(str(e)) from None
+    except evm_token.HistoryIndexing as e:      # large history: progress checkpointed, the next scan resumes
+        raise ScanError(f"Indexing this token's history: {e.progress:.0%} read so far ({e.transfers:,} transfers). "
+                        f"Scan again to continue — progress is kept.") from None
     except bankr.TooActive as e:   # Bankr, index disabled: history larger than a regular scan -- no verdict
         if est := late_established():
             return est
@@ -407,7 +427,7 @@ def scan(token, emit=lambda e: None, chain=None):
         return active_result(token, chain, gt, launch | {"ts": ts0}, info, e.est_logs, ev, t0, a.REQUESTS[0] - r0)
     transfers, supply, excluded, mkt = facts["transfers"], facts["supply"], facts["excluded"], facts["market"]
     base = facts["base"] or d.supply_base(transfers, supply, excluded)
-    holders = d.top_holders(base)
+    holders = d.top_holders(base, scan_depth())
     hs = [w for w, _, _ in holders]
     ratio = base["circulating"] / supply if supply else 0.0
 
@@ -425,6 +445,12 @@ def scan(token, emit=lambda e: None, chain=None):
 
     if est := late_established():
         return est
+
+    # holder type (one batch): contracts are labelled, never excluded — a team's multisig is a contract too
+    try:
+        holder_type = {w: "contract" if c else "wallet" for w, c in a.is_contract(hs).items()} if hs else {}
+    except Exception:   # labelling only: a failure leaves the type unknown, the scan goes on
+        holder_type = {}
 
     ev("stage", "wallets")
     spider = {w: i % SPIDERS for i, w in enumerate(hs)}
@@ -528,7 +554,13 @@ def scan(token, emit=lambda e: None, chain=None):
     sc = d.score(holders, sig, ops, base, facts["reserve"], gt.get("liquidity_usd"), reserve_ok=reserve_ok,
                  limited=limited, q_factor=q_factor, limited_note=limited_note, impact_curve=curve, locked=locked,
                  dev=facts.get("dev"), partial=partial_scan is not None)
-    reason = _reason(sc, base)
+    # coverage: what could and could not be read; a limited scan is never CLEAN (explicit cap, V1 scoring unchanged)
+    client = getattr(a, "client", None)
+    cov = coverage.assess(facts, holders, entries, data, unread, facts.get("history_info"), gt.get("source"),
+                          [{k: p.get(k) for k in ("name", "requests", "errors", "rate_limited", "cooling")}
+                           for p in client.health()["providers"]] if client is not None else [])
+    sc = coverage.apply(sc, cov)
+    reason = _reason(sc, base, len(holders))
     # probably rug: only computation on already collected data, no network requests
     # and only if DANGER was triggered by a behavioral hard rule (not a single whale in a thin pool)
     behavioral = any(not g.startswith("soft:") for g in sc["gates"])
@@ -566,7 +598,9 @@ def scan(token, emit=lambda e: None, chain=None):
         "token": token, "chain": chain, "header": header,
         "launch": launch | {"ts": ts[launch["block"]]},
         "supply": supply, "circulating": base["circulating"], "holders_total": base["holders_total"],
+        "coverage": cov,
         "holders": [{"wallet": a, "share": s, "share_supply": s * ratio, "spider": spider[a],
+                     "holder_type": holder_type.get(a, "unknown"),
                      "signals": sig[a]} for a, _, s in holders],
         "links": links, "packs": packs, "operators": ops,
         "score": sc["score"], "band": sc["band"], "parts": sc["parts"], "gates": sc["gates"],

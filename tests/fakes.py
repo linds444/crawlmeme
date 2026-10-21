@@ -8,6 +8,9 @@ from contextlib import ExitStack
 from unittest import mock
 
 os.environ.setdefault("CRAWLER_RPC", "http://rpc.invalid")   # .env won't overwrite: load_dotenv doesn't touch already set vars
+import tempfile as _tempfile
+# local stores (feed, alerts, history index) of every test run go to a throwaway folder, never ./data
+os.environ.setdefault("LOCAL_DB_PATH", os.path.join(_tempfile.mkdtemp(prefix="crawl-tests-"), "crawl.db"))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from crawler.chains import robinhood as ch   # noqa: E402

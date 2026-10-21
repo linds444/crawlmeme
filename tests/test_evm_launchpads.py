@@ -32,6 +32,11 @@ def replay_adapter(fx):
         def one(q):
             k = json.dumps([q["method"], q.get("params", [])], sort_keys=True)
             if k not in book:
+                p = q.get("params") or []
+                if q["method"] == "eth_call" and len(p) > 1 and p[1] != "latest":
+                    # recorded before balance checks existed: answer like a non-archive node does
+                    return {"jsonrpc": "2.0", "id": q.get("id"),
+                            "error": {"code": -32000, "message": "historical state is not available"}}
                 return {"jsonrpc": "2.0", "id": q.get("id"), "error": {"code": -32000, "message": f"not recorded: {k[:160]}"}}
             return {"jsonrpc": "2.0", "id": q.get("id")} | book[k]
 
@@ -53,6 +58,10 @@ class FixtureCase:
 
     @classmethod
     def setUpClass(cls):
+        # replays must issue exactly the recorded requests: no history index (it has its own tests)
+        cls._noindex = mock.patch.dict(os.environ, {"HISTORY_INDEX": "off"})
+        cls._noindex.start()
+        cls.addClassCleanup(cls._noindex.stop)
         cls.fx = load(cls.NAME)
         cls.ad = replay_adapter(cls.fx)
         cls.token = cls.fx["token"]
