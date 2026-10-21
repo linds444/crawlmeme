@@ -34,7 +34,9 @@ from crawler.env import load_dotenv
 from crawler.chains import priority
 load_dotenv()
 
-RPC = os.environ.get("SOLANA_RPC")
+RPC = os.environ.get("SOLANA_RPC") or (   # explicit endpoint, otherwise Helius from HELIUS_API_KEY (key stays server-side)
+    f"https://mainnet.helius-rpc.com/?api-key={os.environ['HELIUS_API_KEY'].strip()}"
+    if (os.environ.get("HELIUS_API_KEY") or "").strip() else None)
 RPS = int(os.environ.get("SOLANA_RPS", "8"))  # global cap on HTTP requests/sec
 USE_FUNDING = False
 CHAIN = "solana"

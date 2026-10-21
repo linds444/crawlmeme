@@ -39,7 +39,7 @@ CHAINS = {"robinhood": ch, "solana": sol}
 NATIVE = {"robinhood": ("ETH", 10 ** 18), "solana": ("SOL", 10 ** 9), "bsc": ("BNB", 10 ** 18),
           "base": ("ETH", 10 ** 18)}   # unit of eth_in
 NOT_LAUNCHPAD = {"robinhood": "not a Pons V2 token", "solana": "not a pump.fun token"}
-PAD_LABEL = {"clanker": "Clanker", "fourmeme": "four.meme"}
+PAD_LABEL = {"clanker": "Clanker", "fourmeme": "four.meme", "flap": "Flap"}
 NOT_LAUNCHPAD_FLAP = "not a Pons V2 or Flap token"   # Robinhood with FLAP_ENABLED
 TOO_LARGE = "token history too large"                  # Pons: more than ch.SCAN_MAX_LOGS transfers
 GT_NETWORK = {"robinhood": "robinhood", "solana": "solana", "bsc": "bsc", "base": "base"}
@@ -360,6 +360,9 @@ def scan(token, emit=lambda e: None, chain=None):
     eth_box, eth_thread = {}, None
     if evm_hit is not None:
         a = evm_hit[0]
+        if a.LAUNCHPAD == "flap" and evm_hit[1].get("status") != 4:   # BNB Flap on the curve: price = Portal × BNB/USD
+            eth_thread = threading.Thread(target=lambda: eth_box.update(usd=market.native_usd(network)), daemon=True)
+            eth_thread.start()
         try:
             launch = a.get_launch(token)
         except evm_token.HistoryUnavailable as e:

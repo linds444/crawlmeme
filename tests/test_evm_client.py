@@ -211,6 +211,21 @@ class TestRouting(unittest.TestCase):
         c.head()
         self.assertIn("eth_blockNumber", a.calls)
 
+    def test_bounded_probe_does_not_retry(self):
+        """Chain detection probes: one attempt, short timeout, limited providers — a hung node costs seconds."""
+        seen = []
+
+        class Hung(FakeNode):
+            def __call__(self, url, body, timeout):
+                seen.append(timeout)
+                raise TimeoutError("hung")
+        c, _ = client(Hung(), Hung(), Hung())
+        t0 = time.time()
+        with self.assertRaises(NoProvider):
+            c.call("eth_getCode", ["0x1", "latest"], timeout=4.0, tries=1, max_providers=2)
+        self.assertEqual(seen, [4.0, 4.0])                  # two providers, one attempt each, the given timeout
+        self.assertLess(time.time() - t0, 1.0)              # no backoff sleeps
+
     def test_no_provider_for_asset_transfers(self):
         c, _ = client(FakeNode())
         with self.assertRaises(NoProvider):

@@ -8,6 +8,7 @@ Switches (all default off, so V1 behaviour is unchanged until enabled):
   BSC_ENABLED, BASE_ENABLED — scan BNB Chain / Base tokens (chains/evm/networks.py)
   CLANKER_ENABLED           — Clanker v4 on every enabled chain (one eth_call per Robinhood scan to rule it out)
   FOURMEME_ENABLED          — four.meme on BNB Chain
+  FLAP_ENABLED              — Flap on Robinhood (dedicated adapter) and on BNB Chain (plugin)
 A launchpad is listed as supported only once its mainnet integration test passes (tests/test_live_launchpads.py).
 """
 import os, threading
@@ -22,10 +23,10 @@ def _on(var):
 
 def plugins(chain):
     """Enabled launchpad plugins for a chain, in detection order."""
-    from crawler.chains.evm.launchpads import clanker, fourmeme
-    table = {
+    from crawler.chains.evm.launchpads import clanker, flap, fourmeme
+    table = {   # Robinhood Flap / Bankr / Pons: dedicated adapters, dispatched by the engine before these
         "robinhood": [(clanker, "CLANKER_ENABLED")],
-        "bsc": [(fourmeme, "FOURMEME_ENABLED"), (clanker, "CLANKER_ENABLED")],
+        "bsc": [(flap, "FLAP_ENABLED"), (fourmeme, "FOURMEME_ENABLED"), (clanker, "CLANKER_ENABLED")],
         "base": [(clanker, "CLANKER_ENABLED")],
     }
     return [p for p, var in table.get(chain, []) if _on(var)]
@@ -58,6 +59,9 @@ def detect(chain, token):
     return None
 
 
+LOCATE_TIMEOUT_S = 4.0     # per provider, one attempt, at most two providers per chain
+
+
 def locate(token, chains=None):
     """EVM chains (of those enabled) where the address has contract code: one eth_getCode per chain, in parallel.
     A chain whose providers all fail is reported in the second list (unknown), never silently dropped."""
@@ -65,8 +69,9 @@ def locate(token, chains=None):
     found, unknown = [], []
 
     def probe(c):
-        try:
-            code = networks.client(c).call("eth_getCode", [token.lower(), "latest"])
+        try:   # bounded: a slow public node must not hold the scan for minutes; unanswered → unknown
+            code = networks.client(c).call("eth_getCode", [token.lower(), "latest"], timeout=LOCATE_TIMEOUT_S,
+                                           tries=1, max_providers=2)
             return c, code not in (None, "0x", "0x0", "")
         except Exception:
             return c, None

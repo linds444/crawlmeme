@@ -32,7 +32,7 @@ COOLDOWN_S = 30.0         # a provider that failed (transport / 5xx / rate limit
 DENY_S = 300.0            # a method refused with HTTP 401/403 is not asked of that provider for this long: some
                           # endpoints (publicnode) answer 403 both for methods they never serve and when throttling
 TRIES = 3                 # attempts per provider for rate limits and transport errors
-TIMEOUT_S = 30.0
+TIMEOUT_S = 15.0          # per HTTP attempt (connect included): a stalled endpoint fails over instead of holding a scan
 HEAD_TTL_S = 1.0
 
 
@@ -217,21 +217,23 @@ class EvmClient:
         self._gen = [0]        # +1 whenever a provider learns a limit or cools down: callers may re-plan
 
     # ------------------------------------------------------------------ transport
-    def _send(self, p, payload, weight):
+    def _send(self, p, payload, weight, timeout=None, tries=None):
         """One HTTP exchange with provider p (rate-limited, retried on rate limits / transport errors).
         Returns the decoded JSON body; raises _ProviderDown when p should be skipped."""
         body = json.dumps(payload).encode()
         last = "no attempt"
-        for a in range(TRIES):
+        tries = tries or TRIES
+        for a in range(tries):
             priority.rate_limit(p.throttle, self._bg, weight, crit=self._crit)
             self.REQUESTS[0] += 1
             t0 = time.time()
             try:
-                status, raw = self.transport(p.url, body, TIMEOUT_S)
+                status, raw = self.transport(p.url, body, timeout or TIMEOUT_S)
             except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
                 last = type(e).__name__
                 self._count(p, t0, error=True)
-                self._backoff(a)
+                if a < tries - 1:
+                    self._backoff(a)
                 continue
             self._count(p, t0, error=status >= 400)
             if status in (401, 403):                       # this endpoint refuses the method: no retry, no cooldown
@@ -291,15 +293,19 @@ class EvmClient:
         return fresh or ok    # all cooling: try anyway rather than fail
 
     # ------------------------------------------------------------------ public API
-    def call(self, method, params, need=None, prefer=None):
+    def call(self, method, params, need=None, prefer=None, timeout=None, tries=None, max_providers=None):
         """Single JSON-RPC call → result. need: capability requirements (see Provider.serves);
-        prefer: sort key over providers (stable: configured order breaks ties)."""
+        prefer: sort key over providers (stable: configured order breaks ties).
+        timeout / tries / max_providers: tighter bounds for latency-critical probes (chain detection), where an
+        unanswered call is reported as unknown by the caller instead of being retried for minutes."""
         need = dict(need or {}, method=method)
         errors = []
         cands = self._candidates(need)
-        for p in (sorted(cands, key=prefer) if prefer else cands):
+        cands = sorted(cands, key=prefer) if prefer else cands
+        for p in cands[:max_providers] if max_providers else cands:
             try:
-                data = self._send(p, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, 1)
+                data = self._send(p, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, 1,
+                                  timeout=timeout, tries=tries)
             except _ProviderDown as e:
                 self._down(p, method if e.denied else None); errors.append(str(e))
                 continue

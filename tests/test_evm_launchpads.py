@@ -11,11 +11,11 @@ from crawler import engine, market
 from crawler.chains import bankr, registry
 from crawler.chains.evm import abi, networks, v4
 from crawler.chains.evm.client import EvmClient
-from crawler.chains.evm.launchpads import clanker, fourmeme
+from crawler.chains.evm.launchpads import clanker, flap, fourmeme
 from crawler.chains.evm.token import EvmTokenAdapter
 
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "evm")
-PLUGINS = {"clanker": clanker, "fourmeme": fourmeme}
+PLUGINS = {"clanker": clanker, "fourmeme": fourmeme, "flap": flap}
 
 
 def load(name):
@@ -49,6 +49,7 @@ def replay_adapter(fx):
 
 class FixtureCase:
     NAME = None
+    CURVE = True          # sell impact from pool quotes (V4Quoter / trySell); False — from a reserve (x·y=k pools)
 
     @classmethod
     def setUpClass(cls):
@@ -86,6 +87,10 @@ class FixtureCase:
         self.assertFalse(held & set(self.launch["market"]))
 
     def test_impact_curve_shape(self):
+        if not self.CURVE:
+            self.assertTrue(self.facts["reserve_ok"])
+            self.assertGreater(self.facts["reserve"], 0)
+            return
         curve = self.facts.get("impact_curve") or []
         self.assertTrue(curve, "no impact curve from the pool quotes")
         qs = [q for q, _ in curve]
@@ -96,7 +101,8 @@ class FixtureCase:
 
     def test_engine_verdict(self):
         """Full engine scan over the replayed adapter; market and wallet history pinned (not part of the fixture)."""
-        env = {"CLANKER_ENABLED": "true", "FOURMEME_ENABLED": "true", "BSC_ENABLED": "true", "BASE_ENABLED": "true"}
+        env = {"CLANKER_ENABLED": "true", "FOURMEME_ENABLED": "true", "FLAP_ENABLED": "true", "BSC_ENABLED": "true",
+               "BASE_ENABLED": "true"}
         with ExitStack() as st:
             st.enter_context(mock.patch.dict(os.environ, env))
             st.enter_context(mock.patch.dict(registry._ADAPTERS,
@@ -163,6 +169,43 @@ class TestBaseClanker(FixtureCase, unittest.TestCase):
         self.assertIsInstance(res["score"], int)
         self.assertIsNotNone(res["metrics"]["impact"])                  # from the quote curve, not unmeasured
         self.assertTrue(res["headline"].startswith(f"{len(res['holders'])} wallets → "))
+
+
+class TestBscFlapBnb(FixtureCase, unittest.TestCase):
+    """BAP-692 (Flap on BNB, BNB-quoted bonding curve, minutes old)."""
+    NAME = "bsc_flap_bnb"
+    CURVE = False
+
+    def test_virtual_curve_reserve(self):
+        """Reserve = h + 1e9 − circulating from the Portal state, not the Portal balance (virtual x·y=k)."""
+        st = self.launch.get("_state") or self.ad._state[self.token]
+        self.assertEqual(self.facts["reserve"], st["h"] + flap.SUPPLY - st["circulating"])
+        self.assertEqual(self.facts["q_factor"], 1.0)                   # on the curve the tax is taken in BNB
+
+    def test_bnb_cost_of_buys(self):
+        e = self.ad.classify_entries(self.token, self.facts["transfers"], [w for w, _, _ in self.holders])
+        self.assertTrue(any(v["kind"] == "buy" and v["eth_in"] for v in e.values()))
+
+    def check_verdict(self, res):
+        self.assertEqual(res["band"], d.TOO_EARLY)                       # 8 holders
+        self.assertEqual(res["flap"]["phase"], "bonding_curve")
+
+
+class TestBscFlapStockQuote(FixtureCase, unittest.TestCase):
+    """A Flap token on BNB quoted in a tokenized stock (DJTB): buys are buys, but their cost is not BNB."""
+    NAME = "bsc_flap_stockquote"
+    CURVE = False
+
+    def test_cost_not_reported_as_bnb(self):
+        self.assertFalse(self.launch["native_quote"])
+        e = self.ad.classify_entries(self.token, self.facts["transfers"], [w for w, _, _ in self.holders])
+        buys = [v for v in e.values() if v["kind"] == "buy"]
+        self.assertTrue(buys)
+        self.assertTrue(all(v["eth_in"] is None for v in buys))         # never a stock amount labelled as BNB
+
+    def check_verdict(self, res):
+        self.assertIn(res["band"], ("CLEAN", "OK", "RISKY", "DANGER"))
+        self.assertIsNone(res["flap"]["price_eth"])
 
 
 class TestV4Helpers(unittest.TestCase):

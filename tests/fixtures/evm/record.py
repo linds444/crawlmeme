@@ -14,10 +14,10 @@ sys.path.insert(0, ROOT)
 
 from crawler import detect as d                              # noqa: E402
 from crawler.chains.evm import networks                      # noqa: E402
-from crawler.chains.evm.launchpads import clanker, fourmeme  # noqa: E402
+from crawler.chains.evm.launchpads import clanker, flap, fourmeme  # noqa: E402
 from crawler.chains.evm.token import EvmTokenAdapter          # noqa: E402
 
-PLUGINS = {"clanker": clanker, "fourmeme": fourmeme}
+PLUGINS = {"clanker": clanker, "fourmeme": fourmeme, "flap": flap}
 
 
 def key(req):

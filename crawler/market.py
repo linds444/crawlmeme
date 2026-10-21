@@ -19,6 +19,9 @@ GT_FIRST = 1.5    # seconds for GT in fetch_market before switching to DexScreen
 DS = "https://api.dexscreener.com/tokens/v1"
 DS_BUDGET = 3.0   # seconds for DexScreener (all attempts)
 DS_CHAIN = {"robinhood": "robinhood", "solana": "solana", "bsc": "bsc", "base": "base"}  # GT network -> DexScreener chainId
+DP = "https://api.dexpaprika.com/networks"   # DexPaprika (public, no key): third market source
+DP_CHAIN = {"robinhood": "robinhood", "solana": "solana", "bsc": "bsc", "base": "base"}  # GT network -> DexPaprika network
+DP_TIMEOUT = 1.5    # seconds, one attempt: DexPaprika must leave time for the final GeckoTerminal retry
 CHART_BUDGET = 4.0  # seconds for the whole chart (pools + candles + curve history)
 CHART_LIMIT = 1000  # candles per request (GT maximum)
 CURVE_DEX = "pump-fun"  # pump.fun bonding curve pool: after migration its candles are the start of the history
@@ -140,7 +143,8 @@ def fetch_market(token, network="robinhood", now=None, budget=GT_BUDGET):
     no answer (429, error, timeout) -- DexScreener (_ds_market); if that fails too -- GT once more for the rest of the budget.
     mcap -- market cap, otherwise fdv; liquidity -- sum over pools; age_days -- from the earliest pool (None without dates).
     pool -- address of the most liquid pool (GT) / pair (DexScreener; on Solana and Robinhood it is the same pool address
-    as in GT) -- for the chart widget on the frontend. source -- "gt" | "dexscreener". A successful result is cached per token for GT_CACHE_TTL (shared by both sources).
+    as in GT) -- for the chart widget on the frontend. source -- "gt" | "dexscreener" | "dexpaprika" (third fallback:
+    DexScreener has no data or failed). A successful result is cached per token for GT_CACHE_TTL (shared by all sources).
     network -- GT network: "robinhood" | "solana" (Solana addresses are case-sensitive, we do not lowercase them).
     budget -- seconds for all attempts (the engine waits for the answer in the background longer than for the header)."""
     tok = token.lower() if token.startswith("0x") else token   # EVM addresses are case-insensitive
@@ -162,7 +166,13 @@ def fetch_market(token, network="robinhood", now=None, budget=GT_BUDGET):
             print(f"market: {tok} gt {why} -> dexscreener", flush=True)
         except Exception as e:
             print(f"market: {tok} gt {why} -> dexscreener failed ({_why(e)})", flush=True)
-    if not out and end - time.time() > 0.5:   # neither answered -- GT once more for the remainder (previous behavior)
+    if not out and DP_CHAIN.get(network) and end - time.time() > DP_TIMEOUT + 0.5:
+        try:
+            out = _dp_market(tok, network, DP_TIMEOUT)
+            print(f"market: {tok} gt {why} -> dexpaprika", flush=True)
+        except Exception as e:
+            print(f"market: {tok} gt {why} -> dexpaprika failed ({_why(e)})", flush=True)
+    if not out and end - time.time() > 0.5:   # none answered -- GT once more for the remainder (previous behavior)
         try:
             out = _gt_market(_gt(path, budget=end - time.time()), now)
             print(f"market: {tok} gt ok on retry", flush=True)
@@ -173,7 +183,9 @@ def fetch_market(token, network="robinhood", now=None, budget=GT_BUDGET):
     return out
 
 
-NATIVE_WRAPPED = {"robinhood": "0x0bd7d308f8e1639fab988df18a8011f41eacad73"}   # WETH: price of the chain's native coin
+NATIVE_WRAPPED = {"robinhood": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",   # WETH: price of the chain's native coin
+                  "bsc": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",         # WBNB
+                  "base": "0x4200000000000000000000000000000000000006"}        # WETH
 
 
 def native_usd(network="robinhood", budget=GT_BUDGET):
@@ -273,6 +285,22 @@ def _ds_market(tok, network, now=None, budget=DS_BUDGET):
             "vol24h_usd": sum(v for v in vols if v) if any(v is not None for v in vols) else None,
             "age_days": round(((now or time.time()) - min(born)) / 86400, 1) if born else None,
             "pool": max(pairs, key=liq).get("pairAddress"), "source": "dexscreener"}
+
+
+def _dp_market(tok, network, timeout=DP_TIMEOUT):
+    """Token market from DexPaprika /networks/{net}/tokens/{token} (summary over all its pools): same shape as GT.
+    One attempt (no retry loop). DexPaprika gives no pool creation date: age_days None, so a token is never judged
+    "too established" from it. No price (a token DexPaprika has not priced yet) -- LookupError."""
+    d = _get(f"{DP}/{DP_CHAIN[network]}/tokens/{tok}", timeout) or {}
+    s = d.get("summary") or {}
+    f = lambda v: float(v) if v not in (None, "") else None
+    if not f(s.get("price_usd")):
+        raise LookupError("no price")
+    txt = lambda v: (v or "").strip() or None
+    return {"name": txt(d.get("name")), "ticker": txt(d.get("symbol")), "price_usd": f(s.get("price_usd")),
+            "mcap_usd": f(s.get("fdv")), "fdv_usd": f(s.get("fdv")), "liquidity_usd": f(s.get("liquidity_usd")),
+            "vol24h_usd": f((s.get("24h") or {}).get("volume_usd")), "age_days": None, "pool": None,
+            "source": "dexpaprika"}
 
 
 def _ts(iso):

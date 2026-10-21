@@ -178,7 +178,9 @@ class EvmTokenAdapter:
         head = self.client.head()
         if any(p.archive_depth is None for p in self.client.providers):
             try:
-                return self._first_log_in(token, 0, head)
+                found = self._mint_backwards(token, head)
+                if found:
+                    return found
             except NoProvider:
                 pass
         if any(p.state_depth is None for p in self.client.providers):
@@ -191,6 +193,27 @@ class EvmTokenAdapter:
             if first and first["frm"] == abi.ZERO:
                 return first
         return None
+
+    MINT_WINDOW = 10_000_000   # blocks per backward step (the widest span public nodes serve with an address)
+
+    def _mint_backwards(self, token, head):
+        """Creation mint by searching mint logs (Transfer from 0x0) newest-first. Stops once the mints found add up
+        to totalSupply: every outstanding token is accounted for, so the earliest of them is the creation (fixed
+        supply launchpad tokens mint once). Fresh tokens are found in the first window; never reads from genesis
+        forward. None — no mint log found down to block 0."""
+        supply = self.token_supply(token)
+        mints, hi = [], head
+        zero = abi.topic_for(abi.ZERO)
+        while hi >= 0:
+            lo = max(0, hi - self.MINT_WINDOW + 1)
+            for page in self.client.iter_logs(lo, hi, address=token, topics=[abi.TRANSFER_TOPIC, zero]):
+                mints += [t for lg in page if (t := self._parse(lg))]
+            if mints and sum(t["amount"] for t in mints) >= supply:
+                break
+            hi = lo - 1
+        if not mints:
+            return None
+        return min(mints, key=lambda t: (t["block"], t["log_index"]))
 
     def creation_block(self, token):
         """First block where the token has code: binary search of eth_getCode at historical blocks (full archive)."""

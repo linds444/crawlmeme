@@ -1,7 +1,7 @@
 """Load .env from the project root into os.environ (standard library only).
 Environment variables that are already set are not overwritten.
 """
-import os
+import os, re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # repository root
 
@@ -19,5 +19,9 @@ def load_dotenv(path=os.path.join(ROOT, ".env")):
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
+            elif value.startswith("#"):          # KEY=   # comment  -> empty
+                value = ""
+            else:                                # unquoted: an inline comment starts at whitespace + "#"
+                value = re.split(r"\s+#", value, maxsplit=1)[0]
             if key and key not in os.environ:
                 os.environ[key] = value
