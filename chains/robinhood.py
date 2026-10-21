@@ -80,7 +80,7 @@ def _rate_limit(n=1):
     # spreads requests over time so as not to exceed the provider limit (QuickNode 15 rps etc.) and not get 429s.
     # n = request weight: providers count each batch element as a separate call.
     # background (alerts rechecks, early without a scan) yields to live scans and is no faster than BACKGROUND_RPS;
-    # critical work (rewards scheduler) doesn't yield, no faster than CRITICAL_RPS
+    # critical work doesn't yield, no faster than CRITICAL_RPS
     priority.rate_limit(_LIMIT, _BG_LIMIT, n, crit=_CRIT_LIMIT)
 
 

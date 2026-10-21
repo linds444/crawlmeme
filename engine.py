@@ -380,12 +380,17 @@ def scan(token, emit=lambda e: None):
     # alerts recheck pool -- also background (chains.priority: yields to live scans in the RPS limiter)
     ex = ThreadPoolExecutor(max_workers=WORKERS,
                             thread_name_prefix=f"{priority.BG}-pool" if priority.is_background() else "")
+    # readers' scope: past the crawl deadline (or once cancelled below) they start no more RPC requests, so they neither
+    # outlive the scan nor hold limiter slots that the links stage would have to queue behind
+    crawl_deadline = deadline - DETECT_RESERVE
+    sc = priority.Scope(crawl_deadline)
     order = [w for w in hs if entries[w]["kind"] is not None]   # hs -- by descending share: largest first
     width = getattr(a, "HISTORY_PARALLEL", WORKERS)
     left = max(0.05, deadline - DETECT_RESERVE - time.time())
     # time share per wallet: if each fits into it, all make it; whoever takes longer yields the slot to the next
     gate = _RankGate(width, left * width / len(order) if width < len(order) else None)
-    futs = {ex.submit(gate.run, i, _history, a, w, entries[w]["block"], token): w for i, w in enumerate(order)}
+    futs = {ex.submit(priority.run_scoped, sc, gate.run, i, _history, a, w, entries[w]["block"], token): w
+            for i, w in enumerate(order)}
 
     def flag(w):
         s = d.wallet_signals({w: data[w]}, ts[launch["block"]], launch["deployer"],
@@ -399,16 +404,19 @@ def scan(token, emit=lambda e: None):
 
     done = set()
     try:
-        for f in as_completed(futs, timeout=max(0.05, deadline - DETECT_RESERVE - time.time())):
+        for f in as_completed(futs, timeout=max(0.05, crawl_deadline - time.time())):
             w = futs[f]
             try:
                 data[w]["distinct_tokens"] = f.result()
+            except priority.Cancelled:   # reached the deadline mid-read: unread, flagged below with the stragglers
+                continue
             except Exception:
                 pass
             done.add(w)
             flag(w)
     except _CFTimeout:
         pass
+    sc.cancel()
     gate.close()
     ex.shutdown(wait=False, cancel_futures=True)
     unread = [w for w in hs if w not in done]

@@ -5,11 +5,16 @@ from the background) or code inside background() (/api/early without a live scan
 Before each network request such a thread waits (wait_turn) while users' live scans are running
 (live() is a counter in server), and goes through its own separate BACKGROUND_RPS limit (the adapter's Throttle).
 Live threads never wait: for them it is a single thread check.
-Critical work (critical(): the rewards scheduler — draw, burns, payouts) does not yield to live scans and does not
+Critical work (critical()) does not yield to live scans and does not
 count as background: it goes through its own CRITICAL_RPS limit (a guaranteed share) and the adapter's shared limit.
 Strict background (background(strict=True): building the Bankr index) waits for live scans to end without the YIELD_MAX cap:
 while at least one live scan is running, it starts no requests at all.
 RATE_LIMITED in adapters — how many times the node answered with a rate limit (used to pause rechecks).
+
+Scan scope (Scope, bound to a thread with scope()): the wallet readers a scan starts work for that scan only. Once
+the scope is cancelled or its deadline passes, rate_limit raises Cancelled instead of letting the thread start another
+request, and a limiter slot that would only open after the deadline is never taken. So a scan's leftover readers stop
+at the scan's deadline (no RPC after the verdict) and post-crawl stages do not queue behind them.
 """
 import os, threading, time
 from contextlib import contextmanager
@@ -41,7 +46,7 @@ def is_background():
 
 @contextmanager
 def critical():
-    """Critical work in the current thread (rewards scheduler): does not wait for live scans, has its own CRITICAL_RPS limit."""
+    """Critical work in the current thread: does not wait for live scans, has its own CRITICAL_RPS limit."""
     prev = getattr(_tls, "crit", False)
     _tls.crit = True
     try:
@@ -133,36 +138,98 @@ def background_scale(rps):
     return rps / bg if 0 < bg < rps else 1.0
 
 
+POLL_S = 0.05             # seconds: longest a limiter waiter sleeps before rechecking its slot and its scope
+
+
+class Cancelled(BaseException):
+    """The scan this thread reads for has ended (scope cancelled or past its deadline): no new requests.
+    BaseException, like asyncio.CancelledError: the adapters' broad `except Exception` retry loops must not swallow it."""
+
+
+class Scope:
+    """Lifetime of one scan's background readers: cancel() or deadline (unix time, None — none) ends it."""
+
+    def __init__(self, deadline=None):
+        self.deadline = deadline
+        self._ev = threading.Event()
+
+    def cancel(self):
+        self._ev.set()
+
+    def done(self, now=None):
+        return self._ev.is_set() or (self.deadline is not None and (now or time.time()) >= self.deadline)
+
+
+def current_scope():
+    return getattr(_tls, "scope", None)
+
+
+@contextmanager
+def scope(sc):
+    """Bind scan scope sc to the current thread (engine: around each wallet reader in its pool)."""
+    prev = getattr(_tls, "scope", None)
+    _tls.scope = sc
+    try:
+        yield sc
+    finally:
+        _tls.scope = prev
+
+
+def run_scoped(sc, fn, *args):
+    """fn(*args) with scan scope sc bound: for ThreadPoolExecutor.submit (pool threads do not inherit thread-locals)."""
+    with scope(sc):
+        return fn(*args)
+
+
+def check_scope():
+    """Cancelled if the current thread's scan scope has ended; no scope — no-op."""
+    sc = current_scope()
+    if sc is not None and sc.done():
+        raise Cancelled
+
+
 class Throttle:
-    """Rate limit over time: only the slot reservation is under the lock, sleeping is outside it (a waiter does not block others).
+    """Rate limit over time: at most one request start per gap × n seconds.
+    The slot is granted at the moment the request starts, never reserved ahead: a waiter whose scan ended
+    (Cancelled) leaves without holding any future slot, so it cannot delay later requests.
+    Waiting is on a condition over self.lock, which is released while sleeping (a waiter does not block others).
     n — request weight (providers count each batch item). rps <= 0 — no limit."""
 
     def __init__(self, rps):
         self.gap = 1.0 / rps if rps and rps > 0 else 0.0
         self.lock = threading.Lock()
+        self._cv = threading.Condition(self.lock)
         self.next = 0.0
 
-    def wait(self, n=1):
+    def wait(self, n=1, sc=None):
+        """Block until a slot is free and take it. sc — scan scope: ended, or no slot before its deadline — Cancelled."""
         if not self.gap:
+            if sc is not None and sc.done():
+                raise Cancelled
             return
-        with self.lock:
-            now = time.time()
-            slot = max(now, self.next)
-            self.next = slot + self.gap * n
-        if slot > now:
-            time.sleep(slot - now)
+        with self._cv:
+            while True:
+                now = time.time()
+                if sc is not None and (sc.done(now) or (sc.deadline is not None and self.next >= sc.deadline)):
+                    raise Cancelled
+                if now >= self.next:
+                    self.next = now + self.gap * n
+                    return
+                self._cv.wait(min(self.next - now, POLL_S))
 
 
 def rate_limit(main, bg, n=1, crit=None):
     """Shared path of the adapters' limiters: critical work goes through its own crit limit and the shared main one, without waiting for live scans;
-    background yields to live scans and goes through its own bg limit, then the shared main one."""
+    background yields to live scans and goes through its own bg limit, then the shared main one.
+    A thread bound to a scan scope (scope()) gets Cancelled once that scan has ended, before or while waiting."""
+    sc = current_scope()
     if is_critical():
         if crit is not None:
-            crit.wait(n)
-        main.wait(n)
+            crit.wait(n, sc)
+        main.wait(n, sc)
         return
     wait_turn()
     if is_background() and bg.gap:
-        bg.wait(n)
+        bg.wait(n, sc)
         wait_turn()      # a live scan may have started while we waited for our slot
-    main.wait(n)
+    main.wait(n, sc)
