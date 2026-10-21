@@ -7,14 +7,13 @@ Running from code: engine.scan("0x...", emit=print) -> result (dict)."""
 import math, os, re, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as _CFTimeout
 
-from chains import bankr
-from chains import flap
-from chains import priority
-from chains import robinhood as ch
-from chains import solana as sol
-import detect as d
-import market
-
+from crawler.chains import bankr
+from crawler.chains import flap
+from crawler.chains import priority
+from crawler.chains import robinhood as ch
+from crawler.chains import solana as sol
+from crawler import detect as d
+from crawler import market
 BUDGET = 25.0          # seconds for the whole scan (README)
 DETECT_RESERVE = 1.0   # seconds kept for detect and events after reading wallets
 MARKET_WAIT = 3.0      # wait for the GeckoTerminal header before the first RPC at most this many seconds from scan start

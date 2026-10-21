@@ -10,8 +10,8 @@ from unittest import mock
 os.environ.setdefault("CRAWLER_RPC", "http://rpc.invalid")   # .env won't overwrite: load_dotenv doesn't touch already set vars
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from chains import robinhood as ch   # noqa: E402
-import engine, market                # noqa: E402
+from crawler.chains import robinhood as ch   # noqa: E402
+from crawler import engine, market                # noqa: E402
 
 TOKEN = "0x" + "ab" * 20
 OTHER = "0x" + "cd" * 20              # not Pons V2: get_launch returns None
@@ -67,7 +67,7 @@ def patched(history_fn=history, launch=True):
     market.clear_cache()
     stack.enter_context(mock.patch.dict(ch._SCAN, clear=True))     # scan transfer history (early buyers)
     stack.enter_context(mock.patch.dict(ch._LAUNCH, clear=True))
-    srv = sys.modules.get("server")
+    srv = sys.modules.get("crawler.server")
     if srv is not None:   # server: per-IP scan limit and status cache — from a clean slate in each test
         stack.enter_context(mock.patch.dict(srv._RATE, clear=True))
         stack.enter_context(mock.patch.dict(srv._RESP, clear=True))

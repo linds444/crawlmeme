@@ -11,7 +11,7 @@ from unittest import mock
 
 import fakes
 from fakes import ch, engine
-from chains import priority
+from crawler.chains import priority
 
 
 class TestThrottleScope(unittest.TestCase):

@@ -5,9 +5,7 @@ launchpad: "flap" / "bankr" for Flap and Bankr tokens (result["launchpad"]), els
 """
 import os, time
 
-import db
-
-
+from crawler import db
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recent_scans (
   token TEXT PRIMARY KEY, chain TEXT NOT NULL, ticker TEXT, name TEXT,

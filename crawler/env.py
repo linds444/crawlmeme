@@ -3,7 +3,7 @@ Environment variables that are already set are not overwritten.
 """
 import os
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # repository root
 
 
 def load_dotenv(path=os.path.join(ROOT, ".env")):

@@ -4,12 +4,11 @@ eth_getLogs with an adaptive window (on refusal or hitting the response limit th
 trade detection by token movement relative to the market (curve, pool, routers).
 Read-only: no keys, no signing, no sending transactions.
 """
-import os, re, sys, time, json, random, threading, urllib.request
+import os, re, time, json, random, threading, urllib.request
 from collections import defaultdict
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from env import load_dotenv
-from chains import priority
+from crawler.env import load_dotenv
+from crawler.chains import priority
 load_dotenv()
 
 RPC = os.environ["CRAWLER_RPC"]  # Alchemy PAYG endpoint

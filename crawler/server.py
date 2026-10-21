@@ -56,27 +56,27 @@ from email.utils import formatdate, parsedate_to_datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-import alerts
-import db
-import alerts_notify
-import alerts_recheck
-import detect
-from chains import bankr, flap, priority
-import early
-import engine
-import market
-import memguard
-import opmem
-import replay
-import trade
-from recent_store import RecentStore
-from alerts_store import AlertsStore
+from crawler import alerts
+from crawler import db
+from crawler import alerts_notify
+from crawler import alerts_recheck
+from crawler import detect
+from crawler.chains import bankr, flap, priority
+from crawler import early
+from crawler import engine
+from crawler import market
+from crawler import memguard
+from crawler import opmem
+from crawler import replay
+from crawler import trade
+from crawler.recent_store import RecentStore
+from crawler.alerts_store import AlertsStore
 from bot.tg import TelegramError
 
 CACHE_TTL = 600            # seconds: per-token result cache
 MAX_CONCURRENT = 3         # concurrent scans by default (env MAX_CONCURRENT)
 JOB_TTL = 3600             # seconds: old jobs are removed from memory
-ROOT = os.path.dirname(os.path.abspath(__file__))
+WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_v1")   # V1 pages and icons
 ICONS = {                  # path -> (file in static/, content-type); .ico serves the same PNG
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/favicon.png": ("favicon.png", "image/png"),
@@ -738,7 +738,7 @@ class H(BaseHTTPRequestHandler):
             if not replay.enabled():
                 return self._send(404, {"error": "not found"})
             if u.path == "/replay":
-                return self._send_page(os.path.join(ROOT, "replay.html"))
+                return self._send_page(os.path.join(WEB, "replay.html"))
             try:
                 body = cached_response(("replay",), REPLAY_TTL, lambda: replay.api(replay.db_path()))
             except Exception as e:   # database failure: not cached, the process lives on
@@ -791,12 +791,12 @@ class H(BaseHTTPRequestHandler):
         if u.path in ICONS:
             name, ctype = ICONS[u.path]
             try:
-                with open(os.path.join(ROOT, "static", name), "rb") as f:
+                with open(os.path.join(WEB, "static", name), "rb") as f:
                     return self._send(200, f.read(), ctype, ICON_CACHE)
             except FileNotFoundError:
                 return self._send(404, {"error": "not found"})
         if u.path in ("/", "/index.html"):
-            return self._send_page(os.path.join(ROOT, "index.html"))
+            return self._send_page(os.path.join(WEB, "index.html"))
         return self._send(404, {"error": "not found"})
 
     def log_message(self, *a):

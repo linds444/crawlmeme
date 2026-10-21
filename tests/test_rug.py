@@ -5,8 +5,8 @@ from unittest import mock
 
 import fakes
 from fakes import ch, engine, market
-from chains import solana as sol
-import detect as d
+from crawler.chains import solana as sol
+from crawler import detect as d
 from test_detect import Scenario, BUNDLER, CURVE, LAUNCH_BLOCK, LAUNCH_TS, DEPLOYER
 import test_solana as ts
 

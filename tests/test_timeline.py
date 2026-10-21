@@ -5,7 +5,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def built_template():
-    src = open(os.path.join(ROOT, "index.html"), encoding="utf-8").read()
+    src = open(os.path.join(ROOT, "crawler", "web_v1", "index.html"), encoding="utf-8").read()
     a = re.search(r'<script type="__bundler/template">', src).end()
     return json.loads(src[a:src.find("</script>", a)])
 

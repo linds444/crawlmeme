@@ -27,12 +27,11 @@ How the Solana flow differs from Robinhood (the engine gets everything via token
 - a pack is buys within PACK_WINDOW slots, not within one block.
 Funding is not implemented (USE_FUNDING = False): eth_inflows/outgoing_count — NotImplementedError.
 """
-import base64, hashlib, json, os, random, sys, threading, time, urllib.error, urllib.request
+import base64, hashlib, json, os, random, threading, time, urllib.error, urllib.request
 from collections import defaultdict
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from env import load_dotenv
-from chains import priority
+from crawler.env import load_dotenv
+from crawler.chains import priority
 load_dotenv()
 
 RPC = os.environ.get("SOLANA_RPC")

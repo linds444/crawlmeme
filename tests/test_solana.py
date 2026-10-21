@@ -6,9 +6,8 @@ from unittest import mock
 
 import fakes
 from fakes import ch, engine, market
-from chains import solana as sol
-import detect as d
-
+from crawler.chains import solana as sol
+from crawler import detect as d
 SOL_TOKEN = sol.b58encode(bytes([7]) * 32)
 SOL_CURVE = sol.b58encode(bytes([8]) * 32)
 SOL_WALLETS = [sol.b58encode(bytes([20 + i]) * 32) for i in range(12)]

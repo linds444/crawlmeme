@@ -16,8 +16,8 @@ Measurements and events — scripts/probe_flap.py (local), section "Flap" in DEV
 import os, re, time, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
-from chains import priority
-from chains import robinhood as ch
+from crawler.chains import priority
+from crawler.chains import robinhood as ch
 
 CHAIN = ch.CHAIN
 REQUESTS = ch.REQUESTS            # one HTTP counter shared with the Robinhood adapter

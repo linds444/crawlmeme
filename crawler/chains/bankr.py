@@ -17,10 +17,9 @@ Research and measurements: scripts/probe_bankr.py (local), "Bankr" section in DE
 import math, os, random, re, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
 
-from chains import flap, priority
-from chains import robinhood as ch
-import detect as d
-
+from crawler.chains import flap, priority
+from crawler.chains import robinhood as ch
+from crawler import detect as d
 CHAIN = ch.CHAIN
 REQUESTS = ch.REQUESTS            # one HTTP counter shared with the Robinhood adapter
 PACK_WINDOW = ch.PACK_WINDOW

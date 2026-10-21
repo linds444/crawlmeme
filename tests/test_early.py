@@ -7,11 +7,10 @@ from unittest import mock
 
 import fakes
 from fakes import engine, market
-from chains import solana as sol
-import detect as d
-import early
-import server
-
+from crawler.chains import solana as sol
+from crawler import detect as d
+from crawler import early
+from crawler import server
 MINT = sol.b58encode(bytes([7]) * 32)
 CURVE = sol.b58encode(bytes([8]) * 32)
 POOL_PDA = sol.b58encode(bytes([9]) * 32)
@@ -252,7 +251,7 @@ class TestSolanaAdapter(unittest.TestCase):
         self.assertGreaterEqual(sol.EARLY_TX_MAX, 60)
 
 
-from chains import robinhood as rh
+from crawler.chains import robinhood as rh
 
 RT = "0x" + "ab" * 20
 RCURVE = "0x" + "c0" * 20

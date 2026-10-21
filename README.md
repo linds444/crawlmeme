@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="static/favicon.svg" width="96" alt="CRAWLSCAN">
+<img src="crawler/web_v1/static/favicon.svg" width="96" alt="CRAWLSCAN">
 
 # CRAWLSCAN
 
@@ -20,7 +20,7 @@ Telegram bot: [@CrawlScanBot](https://t.me/CrawlScanBot)
 [![license](https://img.shields.io/badge/license-MIT-9fd9ff?style=flat-square\&labelColor=07090b)](LICENSE)
 [![tests](https://img.shields.io/github/actions/workflow/status/0xPunisher/crawlscan/tests.yml?branch=main\&style=flat-square\&labelColor=07090b\&label=tests)](https://github.com/0xPunisher/crawlscan/actions/workflows/tests.yml)
 
-![crawlscan](banner12.jpg)
+![crawlscan](docs/img/banner12.jpg)
 
 </div>
 
@@ -70,7 +70,7 @@ CRAWLSCAN crawls the token's on-chain activity, analyses its top holders, follow
 
 The goal is to make a complex on-chain investigation understandable in seconds, without requiring users to manually inspect hundreds of transactions.
 
-![crawlscan](screen1.jpg)
+![crawlscan](docs/img/screen1.jpg)
 
 ### The core idea
 
@@ -137,7 +137,7 @@ The crawlers start by building the token's real holder picture directly from on-
 
 In both cases bonding curves, liquidity pools, lockers, routers, tax processors and other infrastructure addresses are excluded, so the analysis focuses on actual wallets. Ownership is measured against the **real circulating float**, not against raw supply that sits locked in a curve or pool.
 
-![crawlscan](screen4.jpg)
+![crawlscan](docs/img/screen4.jpg)
 
 ### What CRAWLSCAN checks
 
@@ -152,7 +152,7 @@ Each top holder is analysed across several behavioural dimensions.
 
 The biggest holders are read first, so the wallets that matter most for the verdict are always covered. If a wallet's entry cannot be read reliably, it is marked as **unread** and left out of the signals instead of being guessed.
 
-![crawlscan](screen2.jpg)
+![crawlscan](docs/img/screen2.jpg)
 
 ### How wallets are linked
 
@@ -180,7 +180,7 @@ Packs are treated as **behavioural signals**, not proof of common ownership, so 
 
 Exchanges, bridges, routers and other high-traffic addresses are never used to link wallets, so unrelated users are not glued together.
 
-![crawlscan](screen5.jpg)
+![crawlscan](docs/img/screen5.jpg)
 
 ## Verdict
 
@@ -209,8 +209,8 @@ Hard rules cover cases where a weighted score alone would be misleading:
 > **Complex on-chain investigation -> one understandable verdict.**
 
 <div align="center">
-<img src="assets/scan.png" alt="CRAWLSCAN scan result" width="74%">
-<img src="assets/mobile.jpg" alt="CRAWLSCAN scan result on mobile" width="21%">
+<img src="docs/img/scan.png" alt="CRAWLSCAN scan result" width="74%">
+<img src="docs/img/mobile.jpg" alt="CRAWLSCAN scan result on mobile" width="21%">
 </div>
 
 ## Price chart and probably rug
@@ -325,7 +325,7 @@ cp .env.example .env
 # SOLANA_RPC=https://solana-mainnet.g.alchemy.com/v2/<your-key>
 # SOLANA_ENABLED=true          # Solana scans are off unless this is true
 # FLAP_ENABLED=true            # Flap tokens on Robinhood Chain are off unless this is true
-python3 server.py
+python3 -m crawler.server
 ```
 
 Open `http://localhost:8000`, or go straight to:

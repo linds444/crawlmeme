@@ -8,8 +8,8 @@ from unittest import mock
 
 import fakes
 from fakes import ch, engine, ZERO
-from chains import flap, priority
-import detect as d
+from crawler.chains import flap, priority
+from crawler import detect as d
 
 FTOKEN = "0x" + "f1" * 18 + "7777"        # Flap tax token (7777 suffix)
 NOTFLAP = "0x" + "e2" * 18 + "7777"       # same suffix, but Portal doesn't know it
@@ -606,9 +606,9 @@ class TestF2Header(unittest.TestCase):
     def scan(self, eth=2000.0, gt=None, **kw):
         self.c = Chain(**kw)
         with self.c.patched() as st:
-            self.eth = st.enter_context(mock.patch("market.native_usd", return_value=eth))
+            self.eth = st.enter_context(mock.patch("crawler.market.native_usd", return_value=eth))
             if gt is not None:
-                st.enter_context(mock.patch("market.fetch_market", return_value=gt))
+                st.enter_context(mock.patch("crawler.market.fetch_market", return_value=gt))
             return engine.scan(FTOKEN)
 
     def test_curve_price_from_portal(self):
@@ -703,7 +703,7 @@ class TestF2Early(unittest.TestCase):
             self.assertIsNone(flap.early_buyers(NOTFLAP, 20))
 
     def test_api_early_routes_flap_and_keeps_pons(self):
-        import early
+        from crawler import early
         c = Chain()
         with c.patched():
             early.clear_cache()
@@ -724,7 +724,8 @@ class TestF2Early(unittest.TestCase):
 class TestF2Config(unittest.TestCase):
 
     def test_config_has_flap_flag(self):
-        import json, server
+        import json
+        from crawler import server
         from http.server import ThreadingHTTPServer
         import urllib.request
         srv = ThreadingHTTPServer(("127.0.0.1", 0), server.H)
@@ -746,7 +747,7 @@ class TestF2Frontend(unittest.TestCase):
     def test_built_page(self):
         import json, re
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        src = open(os.path.join(root, "index.html"), encoding="utf-8").read()
+        src = open(os.path.join(root, "crawler", "web_v1", "index.html"), encoding="utf-8").read()
         a = re.search(r'<script type="__bundler/template">', src).end()
         t = json.loads(src[a:src.find("</script>", a)])
         self.assertIn("flapOn:!!d.flap", t)                                     # flag — from /api/config

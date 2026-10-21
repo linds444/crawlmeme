@@ -21,10 +21,9 @@ clean (only tokens older than 24 h after the scan and checked at least once); re
 """
 import collections, os, threading, time
 
-import db
-import market
-import opmem
-
+from crawler import db
+from crawler import market
+from crawler import opmem
 WINDOW_S = 7 * 86400       # window: scans over 7 days, checks -- 7 days after the scan
 MIN_AGE_S = 24 * 3600      # stats include only tokens older than 24 h after the scan
 DROP = 0.90                # drop from market cap at scan that counts as confirmed

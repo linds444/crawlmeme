@@ -11,8 +11,8 @@ Window state (who got what when, deferred summaries) is in process memory: after
 """
 import queue, threading, time, traceback
 
-import alerts
-import trade
+from crawler import alerts
+from crawler import trade
 from bot.tg import Telegram, TelegramError
 
 COOLDOWN = 15 * 60     # seconds between notifications for one token to one chat

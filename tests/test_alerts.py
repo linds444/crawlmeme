@@ -4,10 +4,10 @@ from unittest import mock
 from http.server import ThreadingHTTPServer
 
 import fakes
-import alerts
-import early
-import server
-from alerts_store import AlertsStore
+from crawler import alerts
+from crawler import early
+from crawler import server
+from crawler.alerts_store import AlertsStore
 
 T = "0x" + "11" * 20
 A, B, C, D = ("0x" + c * 40 for c in "abcd")
@@ -486,7 +486,7 @@ class TestWatchAPI(unittest.TestCase):
         self.assertEqual(self.watch(RH2)[0], 200)      # market did not respond ({}) — watch it
 
     def test_too_active(self):
-        from chains import bankr
+        from crawler.chains import bankr
         with mock.patch.dict(bankr._ACTIVE, clear=True):
             bankr.mark_active(RH3)                    # scan gave TOO ACTIVE (Bankr, index disabled)
             code, d = self.watch(RH3)

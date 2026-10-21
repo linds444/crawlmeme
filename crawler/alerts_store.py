@@ -4,9 +4,8 @@ alert_watches (chat subscriptions: up to WATCH_LIMIT tokens per chat, live for W
 """
 import json, os, time
 
-import db
-
-from alerts import ROUND, WATCH_DAYS, WATCH_LIMIT
+from crawler import db
+from crawler.alerts import ROUND, WATCH_DAYS, WATCH_LIMIT
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS alert_snapshots (

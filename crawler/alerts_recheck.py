@@ -15,8 +15,8 @@ A failed attempt (scan error) is retried no sooner than ALERTS_RECHECK_MIN.
 """
 import collections, os, threading, time, traceback
 
-import alerts
-from chains import priority
+from crawler import alerts
+from crawler.chains import priority
 
 TICK = 60                 # seconds between passes
 PAUSE = 600               # seconds of pause after an RPC rate-limit

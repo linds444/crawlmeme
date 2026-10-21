@@ -5,10 +5,10 @@ from unittest import mock
 
 import fakes
 from fakes import ch, engine, market
-from chains import robinhood as rh
-from chains import solana as sol
-import detect as d
-import recent_store
+from crawler.chains import robinhood as rh
+from crawler.chains import solana as sol
+from crawler import detect as d
+from crawler import recent_store
 from test_rug import TestRugProjection, signals
 import test_solana as ts
 

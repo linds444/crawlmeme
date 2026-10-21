@@ -6,14 +6,14 @@ from http.server import ThreadingHTTPServer
 
 import fakes
 from fakes import ch
-import alerts_recheck as ar
-import db
-import engine
-import memguard
-import server
+from crawler import alerts_recheck as ar
+from crawler import db
+from crawler import engine
+from crawler import memguard
+from crawler import server
 import test_alerts_recheck as tar
-from alerts_store import AlertsStore
-from recent_store import RecentStore
+from crawler.alerts_store import AlertsStore
+from crawler.recent_store import RecentStore
 from bot import api as bot_api, text as T
 from test_bot import FakeAPI, make, private, drain, RH
 

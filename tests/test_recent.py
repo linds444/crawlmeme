@@ -4,8 +4,8 @@ from unittest import mock
 from http.server import ThreadingHTTPServer
 
 import fakes
-import server
-from recent_store import RecentStore, entry
+from crawler import server
+from crawler.recent_store import RecentStore, entry
 
 SOL = "fjKUqPWK9m331Y5TZZNFismtqoP2MGWAMHEkB62pump"
 

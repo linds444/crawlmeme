@@ -19,8 +19,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import env                                          # noqa: E402
-import trade                                        # noqa: E402
+from crawler import env                                          # noqa: E402
+from crawler import trade                                        # noqa: E402
 from bot import text as T                           # noqa: E402
 from bot.api import AlertsOff, ApiError, Busy, CrawlScan, Rejected   # noqa: E402
 from bot.tg import Telegram, TelegramError          # noqa: E402

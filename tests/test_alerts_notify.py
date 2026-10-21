@@ -4,10 +4,10 @@ from unittest import mock
 from http.server import ThreadingHTTPServer
 
 import fakes
-import alerts
-import alerts_notify as an
-import server
-from alerts_store import AlertsStore
+from crawler import alerts
+from crawler import alerts_notify as an
+from crawler import server
+from crawler.alerts_store import AlertsStore
 from bot.tg import TelegramError
 
 T = "0x" + "11" * 20

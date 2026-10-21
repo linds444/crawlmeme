@@ -5,8 +5,8 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 import fakes
-import opmem
-import server
+from crawler import opmem
+from crawler import server
 
 T1, T2 = "0x" + "11" * 20, "0x" + "22" * 20
 A, B, C, D, DEV, SRC = ("0x" + c * 40 for c in "abcdef")

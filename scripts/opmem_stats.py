@@ -6,10 +6,10 @@ seen in the most tokens. Read-only.
 import datetime as dt, os, sqlite3, sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from env import load_dotenv   # noqa: E402
+from crawler.env import load_dotenv   # noqa: E402
 
 load_dotenv()
-import opmem                  # noqa: E402
+from crawler import opmem                  # noqa: E402
 
 
 def size(path):

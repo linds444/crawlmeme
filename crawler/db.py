@@ -5,7 +5,7 @@ file write in turn instead of fighting over the SQLite lock.
 """
 import os, sqlite3, threading
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # repository root
 DEFAULT_PATH = os.path.join(ROOT, "data", "crawl.db")
 BUSY_TIMEOUT = 5.0   # seconds a connection waits for another writer before OperationalError
 _locks, _locks_lock = {}, threading.Lock()

@@ -81,7 +81,8 @@ Run from the repo root: python3 scripts/build_frontend.py
 import json, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC, OUT = os.path.join(ROOT, "design.html"), os.path.join(ROOT, "index.html")
+WEB = os.path.join(ROOT, "crawler", "web_v1")
+SRC, OUT = os.path.join(WEB, "design.html"), os.path.join(WEB, "index.html")
 SAMPLES = {"robinhood": "0xb4bb188e2d0e82ef9dba8b31ffe41855a2feac0f",   # "try a sample" per chain
            "solana": "fjKUqPWK9m331Y5TZZNFismtqoP2MGWAMHEkB62pump"}
 X_URL = "https://x.com/0x_Punisher"

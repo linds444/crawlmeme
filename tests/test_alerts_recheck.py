@@ -4,11 +4,11 @@ import os, tempfile, threading, time, unittest
 from unittest import mock
 
 import fakes
-import alerts
-import alerts_recheck as ar
-import server
-from alerts_store import AlertsStore
-from chains import priority
+from crawler import alerts
+from crawler import alerts_recheck as ar
+from crawler import server
+from crawler.alerts_store import AlertsStore
+from crawler.chains import priority
 
 T1, T2, T3, T4, T5 = ("0x" + c * 40 for c in "12345")
 NOW = 1_800_000_000.0
@@ -271,7 +271,7 @@ class TestPriority(unittest.TestCase):
         self.assertEqual(out, [1])
 
     def test_adapters_wait_turn(self):
-        from chains import robinhood as ch, solana as sol
+        from crawler.chains import robinhood as ch, solana as sol
         for a in (ch, sol):
             with mock.patch.object(priority, "wait_turn") as wt:
                 a._rate_limit()

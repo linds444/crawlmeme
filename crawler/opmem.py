@@ -26,8 +26,7 @@ open (migrate), rows are left untouched.
 """
 import hashlib, json, os, queue, sqlite3, threading, time
 
-import db
-
+from crawler import db
 QUEUE_MAX = 500            # results waiting to be written; more -- dropped
 DROP_LOG_EVERY = 60        # seconds: overflow log line at most this often
 MIN_INTERVAL_H = 6.0       # hours between writes of the same token (env OPMEM_MIN_INTERVAL_H)

@@ -6,10 +6,9 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fakes
 from fakes import ch, engine
-from chains import priority
-import early
-import server
-
+from crawler.chains import priority
+from crawler import early
+from crawler import server
 KEYS = ("holders", "holders_total", "circulating", "operators", "links", "packs", "score", "band", "parts",
         "gates", "metrics", "headline", "reason", "rug", "unread", "reserve", "reserve_ok")
 NEW = [fakes.wallet(i) for i in range(20, 24)]      # new buyers in the tail

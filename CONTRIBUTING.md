@@ -8,7 +8,7 @@ Requirements: Python 3.12, no third-party packages.
 
 ```sh
 echo "CRAWLER_RPC=https://robinhood-mainnet.g.alchemy.com/v2/<your-key>" > .env
-python3 server.py
+python3 -m crawler.server
 ```
 
 Open http://localhost:8000 and paste a Pons V2 token address, or go straight to `http://localhost:8000/?ca=0x...`.
@@ -33,11 +33,13 @@ Tests run on a mocked chain adapter: no network and no RPC key are needed. Every
 
 | Path | Role |
 |---|---|
-| `chains/robinhood.py` | Chain adapter: the only code that talks to the blockchain. |
-| `detect.py` | Detectors: pure functions, no network. Holders, signals, links, operators, score. |
-| `engine.py` | Runs a scan step by step and emits events under a hard time budget. |
-| `server.py` | HTTP server (standard library). |
-| `index.html` | Frontend, **generated** from `design.html` by `scripts/build_frontend.py`. Do not edit by hand. |
+| `crawler/chains/` | Chain and launchpad adapters: the only code that talks to a blockchain. |
+| `crawler/detect.py` | Detectors: pure functions, no network. Holders, signals, links, operators, score. |
+| `crawler/engine.py` | Runs a scan step by step and emits events under a hard time budget. |
+| `crawler/server.py` | V1 HTTP server (standard library). |
+| `crawler/web_v1/index.html` | V1 frontend, **generated** from `design.html` by `scripts/build_frontend.py`. Do not edit by hand. |
+| `bot/` | Telegram bot, a client of the HTTP API. |
+| `docs/` | Phase reports and design documents. |
 
 ## Pull requests
 

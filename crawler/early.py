@@ -11,10 +11,10 @@ statuses and summary are detect.early_report (pure functions). This module holds
 """
 import threading, time
 
-import detect as d
-import engine
-import market
-from chains import bankr, flap, priority
+from crawler import detect as d
+from crawler import engine
+from crawler import market
+from crawler.chains import bankr, flap, priority
 
 N = 20                    # buyers
 BUDGET = 10.0             # seconds per computation (network)

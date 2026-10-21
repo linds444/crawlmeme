@@ -127,7 +127,7 @@ class TestAddress(unittest.TestCase):
             self.assertIsNone(T.find_address(s), s)
 
     def test_same_as_site(self):
-        from chains import solana as sol
+        from crawler.chains import solana as sol
         for s in [SOL, PUMP, "1" * 32, "11111111111111111111111111111111", "z" * 44, "2" * 33]:
             self.assertEqual(T.chain_of(s) == "solana", sol.is_address(s), s)
 
@@ -598,7 +598,7 @@ class TestAlerts(unittest.TestCase):
 
     def test_unwatch_callback_from_notification(self):
         """[Unwatch] under a site notification (callback_data from alerts.message)."""
-        import alerts
+        from crawler import alerts
         bot, tg, api = self.make()
         bot.handle_update(private(f"/watch {RH}"))
         _, markup = alerts.message({"token": RH.lower(), "chain": "robinhood", "band": "OK", "score": 70}, [])

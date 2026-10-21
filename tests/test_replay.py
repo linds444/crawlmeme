@@ -6,10 +6,9 @@ from http.server import ThreadingHTTPServer
 from unittest import mock
 
 import fakes  # noqa: F401  (before server: no real RPC)
-import opmem
-import replay
-import server
-
+from crawler import opmem
+from crawler import replay
+from crawler import server
 DAY, H = 86400, 3600
 NOW = 1_800_000_000
 T = ["0x" + f"{i:040x}" for i in range(1, 200)]
@@ -109,7 +108,7 @@ class TestMigration(unittest.TestCase):
         self.assertEqual({c: scan[c] for c, _ in opmem.MARKET_COLUMNS}, {c: None for c, _ in opmem.MARKET_COLUMNS})
 
     def test_header_has_fdv(self):
-        import engine
+        from crawler import engine
         self.assertEqual(engine._header({"fdv_usd": 5.0, "mcap_usd": 4.0})["fdv_usd"], 5.0)
 
 
@@ -443,7 +442,7 @@ class TestServer(unittest.TestCase):
         self.assertIn("replay: checks every 60 min", out.getvalue())
 
     def test_page_has_no_banned_words(self):
-        with open(os.path.join(server.ROOT, "replay.html"), encoding="utf-8") as f:
+        with open(os.path.join(server.WEB, "replay.html"), encoding="utf-8") as f:
             page = f.read().lower()
         for w in ("scam", "scammer"):
             self.assertNotIn(w, page)
