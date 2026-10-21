@@ -91,11 +91,14 @@ PUBLIC = {
                  addressless=False, archive_depth=8_000, state_depth=8_000, max_span=5_000,
                  deny={"eth_getTransactionReceipt"}),
             # Binance's own node: receipts, blocks and calls, but eth_getLogs is refused ("limit exceeded")
-            dict(name="bsc-dataseed", url="https://bsc-dataseed.binance.org", rps=5, deny={"eth_getLogs"})],
+            # (historical state only ~128 blocks: "missing trie node" beyond; blocks and receipts are full history)
+            dict(name="bsc-dataseed", url="https://bsc-dataseed.binance.org", rps=5, deny={"eth_getLogs"},
+                 state_depth=128)],
     "base": [dict(name="base-publicnode", url="https://base-rpc.publicnode.com", rps=5,
                   addressless=False, archive_depth=8_000, state_depth=8_000, max_span=1_000,
                   deny={"eth_getTransactionReceipt"}),
-             # the official endpoint: receipts, blocks and calls; eth_getLogs answered "request limit reached"
+             # the official endpoint: receipts, blocks and calls, historical state too (archive: checked 1M blocks
+             # back); eth_getLogs answered "request limit reached"
              dict(name="base-official", url="https://mainnet.base.org", rps=5, deny={"eth_getLogs"})],
 }
 

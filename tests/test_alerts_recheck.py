@@ -347,7 +347,7 @@ class TestServerPath(unittest.TestCase):
     def test_live_scan_counted(self):
         seen = []
         with fakes.patched(), mock.patch.object(server.engine, "scan",
-                                                side_effect=lambda t, emit: seen.append(priority.live_count()) or result(t)):
+                                                side_effect=lambda t, emit, **kw: seen.append(priority.live_count()) or result(t)):
             jid = server.start_scan(fakes.TOKEN)
             t0 = time.time()
             while not server.JOBS[jid]["done"] and time.time() - t0 < 5:
@@ -380,13 +380,13 @@ class TestServerPath(unittest.TestCase):
             raise RuntimeError("db down")
 
         paths = {
-            "ok": dict(scan=lambda t, emit: result(t)),
-            "too established": dict(scan=lambda t, emit: result(t, band="TOO_ESTABLISHED", score=None)),
-            "too early": dict(scan=lambda t, emit: result(t, band="TOO_EARLY_OR_LATE", score=None)),
+            "ok": dict(scan=lambda t, emit, **kw: result(t)),
+            "too established": dict(scan=lambda t, emit, **kw: result(t, band="TOO_ESTABLISHED", score=None)),
+            "too early": dict(scan=lambda t, emit, **kw: result(t, band="TOO_EARLY_OR_LATE", score=None)),
             "scan error": dict(scan=raise_(server.engine.ScanError("not a Pons V2 token"))),
             "crash": dict(scan=raise_(RuntimeError("rpc down"))),
-            "record_recent fails": dict(scan=lambda t, emit: result(t), record_recent=boom),
-            "record_snapshot fails": dict(scan=lambda t, emit: result(t), record_snapshot=boom),
+            "record_recent fails": dict(scan=lambda t, emit, **kw: result(t), record_recent=boom),
+            "record_snapshot fails": dict(scan=lambda t, emit, **kw: result(t), record_snapshot=boom),
         }
         for name, kw in paths.items():
             with self.subTest(name):
@@ -400,7 +400,7 @@ class TestServerPath(unittest.TestCase):
 
     def test_cached_result_no_counter(self):
         """A response from the 10-minute result cache does not start a thread and does not touch the counter."""
-        job = self.scan_job(lambda t, emit: result(t))
+        job = self.scan_job(lambda t, emit, **kw: result(t))
         calls = []
         with mock.patch.object(server.threading, "Thread", side_effect=lambda *a, **k: calls.append(1)):
             self.assertEqual(server.start_scan(fakes.TOKEN), next(j for j, v in server.JOBS.items() if v is job))

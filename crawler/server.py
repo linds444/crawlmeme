@@ -61,7 +61,8 @@ from crawler import db
 from crawler import alerts_notify
 from crawler import alerts_recheck
 from crawler import detect
-from crawler.chains import bankr, flap, priority
+from crawler.chains import bankr, flap, priority, registry
+from crawler.chains.evm import networks as evm_networks
 from crawler import early
 from crawler import engine
 from crawler import market
@@ -120,6 +121,7 @@ SCAN_QUEUE_MAX = _env_int("SCAN_QUEUE_MAX", SCAN_QUEUE_MAX)
 _ACTIVE = [0]              # scans running or waiting for a slot (under _lock)
 _STATS = {"started": 0, "busy": 0}   # new scans and busy refusals since the last memguard line (under _lock)
 RETRY_AFTER = 5            # seconds: Retry-After header on 503 busy
+MAX_BODY = 64 * 1024       # bytes: largest accepted request body (larger -> 413 without reading it)
 BUSY = {"error": "busy", "message": "Scanner is busy, try again in a few seconds"}
 # rate of new scans per IP (CF-Connecting-IP): regular client / CrawlScan bot by user agent;
 # a request with a valid X-Alerts-Secret (our bot) — no limit
@@ -162,6 +164,12 @@ def _rate_take(client, now):
     _RATE[key] = hits
 
 
+def _key(chain, token):
+    """BY_TOKEN key: the bare address for Robinhood and Solana (V1 behaviour), chain:address for chains added later
+    (the same 0x address can exist on several EVM chains)."""
+    return token if chain in ("robinhood", "solana") else f"{chain}:{token}"
+
+
 def _run(job_id, token):
     try:
         with priority.live():   # live scan: background alerts rechecks wait and do not start
@@ -180,7 +188,7 @@ def _run_job(job_id, token):
 
     with _sem:
         try:
-            res = engine.scan(token, emit)
+            res = engine.scan(token, emit, chain=job["chain"])
             with _lock:
                 job["result"] = res
         except engine.ScanError as e:
@@ -231,18 +239,22 @@ def scan_stats():
     return active, f", last min: {started} started, {busy} busy"
 
 
-def start_scan(token, client=None):
+def start_scan(token, client=None, chain=None):
     """job_id: fresh cache for the token or an already running scan of the same token, otherwise a new one.
     New only if there is room in the queue and memory is below the threshold, otherwise Busy; and if client (key, per-minute limit)
-    has not exhausted the new-scan limit, otherwise RateLimited. Cache hits and joining a running scan do not use the limit."""
-    chain, token = engine.chain_of(token)
+    has not exhausted the new-scan limit, otherwise RateLimited. Cache hits and joining a running scan do not use the limit.
+    chain — explicit chain for a 0x address (engine.chain_of); without it an address found on several enabled chains
+    raises engine.AmbiguousChain."""
+    chain, token = engine.chain_of(token, chain)
+    key = _key(chain, token)
     now = time.time()
     with _lock:
         for jid in [j for j, v in JOBS.items() if v["done"] and now - v["ts"] > JOB_TTL]:
-            if BY_TOKEN.get(JOBS[jid]["token"]) == jid:
-                del BY_TOKEN[JOBS[jid]["token"]]
+            k = JOBS[jid].get("key", JOBS[jid]["token"])
+            if BY_TOKEN.get(k) == jid:
+                del BY_TOKEN[k]
             del JOBS[jid]
-        jid = _reuse(token, now)
+        jid = _reuse(key, now)
         if jid:
             return jid
         active = _ACTIVE[0]
@@ -251,7 +263,7 @@ def start_scan(token, client=None):
     if memguard.over(live=active, cap=MAX_CONCURRENT):   # outside _lock: cache reset and gc do not block other requests
         _busy("memory")
     with _lock:
-        jid = _reuse(token, now)
+        jid = _reuse(key, now)
         if jid:
             return jid
         if _ACTIVE[0] >= MAX_CONCURRENT + SCAN_QUEUE_MAX:
@@ -261,19 +273,32 @@ def start_scan(token, client=None):
         _ACTIVE[0] += 1
         _STATS["started"] += 1
         jid = uuid.uuid4().hex[:12]
-        JOBS[jid] = {"token": token, "chain": chain, "events": [], "done": False, "result": None, "error": None,
-                     "ts": now}
-        BY_TOKEN[token] = jid
+        JOBS[jid] = {"token": token, "chain": chain, "key": key, "events": [], "done": False, "result": None,
+                     "error": None, "ts": now}
+        BY_TOKEN[key] = jid
     try:
         threading.Thread(target=_run, args=(jid, token), daemon=True).start()
     except RuntimeError:   # can't start new thread: same as a full queue
         with _lock:
             _ACTIVE[0] -= 1
             JOBS.pop(jid, None)
-            if BY_TOKEN.get(token) == jid:
-                del BY_TOKEN[token]
+            if BY_TOKEN.get(key) == jid:
+                del BY_TOKEN[key]
         raise Busy("thread") from None
     return jid
+
+
+def chains_config():
+    """/api/config chains: enabled chains with their enabled launchpads (frontend chain selector)."""
+    out = []
+    for c in evm_networks.enabled_chains():
+        pads = (["pons"] + (["flap"] if flap.enabled() else []) + (["bankr"] if bankr.enabled() else [])
+                if c == "robinhood" else [])
+        out.append({"chain": c, "name": evm_networks.NETWORKS[c].name, "chain_id": evm_networks.NETWORKS[c].chain_id,
+                    "launchpads": pads + registry.launchpad_names(c)})
+    if engine.solana_enabled():
+        out.append({"chain": "solana", "name": "Solana", "chain_id": None, "launchpads": ["pumpfun"]})
+    return out
 
 
 def scan_flags(token):
@@ -674,8 +699,9 @@ class H(BaseHTTPRequestHandler):
         body = {}
         if method == "POST":
             try:
-                n = int(self.headers.get("content-length") or 0)
-                body = json.loads(self.rfile.read(n) or b"{}")
+                body = self._body()
+                if body is None:
+                    return self._send(413, {"error": "request body too large"})
                 if not isinstance(body, dict):
                     raise ValueError
             except ValueError:
@@ -693,10 +719,14 @@ class H(BaseHTTPRequestHandler):
         if urlparse(self.path).path != "/api/scan":
             return self._send(404, {"error": "not found"})
         try:
-            n = int(self.headers.get("content-length") or 0)
-            body = json.loads(self.rfile.read(n) or b"{}")
+            body = self._body()
+            if body is None:
+                return self._send(413, {"error": "request body too large"})
             return self._send(200, {"job": start_scan(body.get("token"),
-                                                      scan_client(self.headers, self.client_address[0]))})
+                                                      scan_client(self.headers, self.client_address[0]),
+                                                      chain=body.get("chain"))})
+        except engine.AmbiguousChain as e:   # same address on several chains: the client must choose one
+            return self._send(409, {"error": "ambiguous_chain", "message": str(e), "chains": e.chains})
         except Busy:
             return self._send(503, BUSY, headers={"retry-after": str(RETRY_AFTER)})
         except RateLimited as e:
@@ -705,6 +735,16 @@ class H(BaseHTTPRequestHandler):
             return self._send(400, {"error": str(e)})
         except (ValueError, AttributeError):
             return self._send(400, {"error": "bad json"})
+
+    def _body(self):
+        """JSON request body, at most MAX_BODY bytes (audit S1): None if larger — nothing is read then.
+        ValueError for bad JSON or a bad content-length."""
+        n = int(self.headers.get("content-length") or 0)
+        if n < 0:
+            raise ValueError("negative content-length")
+        if n > MAX_BODY:
+            return None
+        return json.loads(self.rfile.read(n) or b"{}")
 
     def do_HEAD(self):
         """HEAD = GET without a body: same status and headers (content-length as for GET), the body is not written (_send, _send_page)."""
@@ -719,10 +759,12 @@ class H(BaseHTTPRequestHandler):
             return self._alerts("GET", u.path, q)
         if u.path == "/api/config":  # frontend and bot: which chains are enabled (SOLANA_ENABLED), alerts (ALERTS_ENABLED), Trade on Axiom
             env = tuple(os.environ.get(k) for k in ("SOLANA_ENABLED", "ALERTS_ENABLED", "FLAP_ENABLED", "BANKR_ENABLED",
-                                                    "REPLAY_ENABLED", "TRADE_URL_ROBINHOOD", "TRADE_URL_SOLANA"))
+                                                    "REPLAY_ENABLED", "TRADE_URL_ROBINHOOD", "TRADE_URL_SOLANA",
+                                                    "BSC_ENABLED", "BASE_ENABLED", "CLANKER_ENABLED", "FOURMEME_ENABLED"))
             body = cached_response(("config",) + env, STATUS_TTL, lambda: {
                 "solana": engine.solana_enabled(), "alerts": alerts.enabled(), "flap": flap.enabled(),
-                "bankr": bankr.enabled(), "replay": replay.enabled(), "trade": trade.templates()})
+                "bankr": bankr.enabled(), "replay": replay.enabled(), "trade": trade.templates(),
+                "chains": chains_config()})
             return self._send(200, body, cache=STATUS_CACHE)
         if u.path == "/api/index":   # Bankr: is the full holder index ready (the site rescans when ready)
             token = (q.get("token") or [""])[0]

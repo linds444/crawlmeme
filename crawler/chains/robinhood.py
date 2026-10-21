@@ -11,7 +11,8 @@ from crawler.env import load_dotenv
 from crawler.chains import priority
 load_dotenv()
 
-RPC = os.environ["CRAWLER_RPC"]  # Alchemy PAYG endpoint
+RPC = os.environ.get("CRAWLER_RPC")  # read-only endpoint (Alchemy, QuickNode, public); checked at request time so a
+                                     # deployment without Robinhood Chain can still import the engine
 
 CHAIN = "robinhood"
 PACK_WINDOW = 0           # pack window (detect.find_packs): same block
@@ -93,6 +94,8 @@ def _post(payload, _tries=5):
     for a in range(_tries):
         _rate_limit(len(payload) if isinstance(payload, list) else 1)
         REQUESTS[0] += 1
+        if not RPC:
+            raise RuntimeError("CRAWLER_RPC is not set")
         req = urllib.request.Request(RPC, data=json.dumps(payload).encode(),
                                      headers={"content-type": "application/json", "User-Agent": "Mozilla/5.0 rh-crawler"})
         try:
