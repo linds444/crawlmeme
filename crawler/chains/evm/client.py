@@ -8,7 +8,10 @@ windows. So each request goes to a provider that can serve it, with failover:
   Provider capabilities (declared in config, refined at run time from the provider's own error messages):
     max_span       — widest eth_getLogs block range (None: no known limit)
     addressless    — accepts eth_getLogs without an address filter
-    archive_depth  — how many blocks back state and logs are served (None: full archive)
+    archive_depth  — how many blocks back logs, receipts and blocks are served (None: full history)
+    state_depth    — how many blocks back historical state (eth_call / eth_getCode at a block) is served
+                     (None: full archive; 0: latest only). Separate from archive_depth: the public Robinhood
+                     node serves every log since genesis but no historical state
     asset_transfers— serves alchemy_getAssetTransfers
   Routing: providers in configured order, skipping those that cannot serve the request or are cooling down after
   failures. A provider-side failure (transport, HTTP 5xx, rate limit after retries, capability refusal) moves on to
@@ -26,6 +29,8 @@ from crawler.chains import priority
 
 LOG_CAP = 10_000          # many nodes silently truncate eth_getLogs at this many logs: a full page is split and re-read
 COOLDOWN_S = 30.0         # a provider that failed (transport / 5xx / rate limit) is skipped for this long
+DENY_S = 300.0            # a method refused with HTTP 401/403 is not asked of that provider for this long: some
+                          # endpoints (publicnode) answer 403 both for methods they never serve and when throttling
 TRIES = 3                 # attempts per provider for rate limits and transport errors
 TIMEOUT_S = 30.0
 HEAD_TTL_S = 1.0
@@ -97,11 +102,16 @@ class Provider:
     """One RPC endpoint and what it can serve. url may contain a secret: never log it."""
 
     def __init__(self, name, url, rps=5.0, max_span=None, addressless=True, archive_depth=None,
-                 asset_transfers=False, batch_max=50, max_span_addressless=None, throttle=None):
+                 asset_transfers=False, batch_max=50, max_span_addressless=None, throttle=None, state_depth=None,
+                 deny=None):
         self.name, self.url = name, url
         self.rps = rps
         self.max_span, self.addressless, self.archive_depth = max_span, addressless, archive_depth
         self.max_span_addressless = max_span_addressless   # address-less queries often have a tighter limit
+        self.state_depth = state_depth
+        # methods this endpoint refuses → until when: declared ones (measured, e.g. receipts on publicnode,
+        # eth_getLogs on Binance's dataseed nodes) forever, ones learned from HTTP 401/403 for DENY_S
+        self._denied = {m: float("inf") for m in (deny or ())}
         self.asset_transfers, self.batch_max = asset_transfers, batch_max
         # throttle may be shared with another client of the same endpoint (Robinhood: the Pons adapter's limiter),
         # so both together stay under the provider's rate limit
@@ -113,13 +123,32 @@ class Provider:
     def __repr__(self):   # never the URL
         return f"Provider({self.name})"
 
-    def serves(self, need, head):
+    @property
+    def denied(self):
+        now = time.time()
+        return {m for m, until in self._denied.items() if until > now}
+
+    @property
+    def denied_forever(self):
+        return {m for m, until in self._denied.items() if until == float("inf")}
+
+    def deny(self, method, seconds=DENY_S):
+        with self.lock:
+            if self._denied.get(method, 0) != float("inf"):
+                self._denied[method] = time.time() + seconds
+
+    def serves(self, need, head, lenient=False):
+        if need.get("method") in (self.denied_forever if lenient else self.denied):
+            return False
         if need.get("asset_transfers") and not self.asset_transfers:
             return False
         if need.get("addressless") and not self.addressless:
             return False
         lo = need.get("from_block")
         if lo is not None and self.archive_depth is not None and head is not None and lo < head - self.archive_depth:
+            return False
+        sb = need.get("state_block")
+        if sb is not None and self.state_depth is not None and head is not None and sb < head - self.state_depth:
             return False
         return True
 
@@ -129,7 +158,7 @@ class Provider:
             return min(self.max_span_addressless, self.max_span or self.max_span_addressless)
         return self.max_span
 
-    def learn(self, kind, message, lo=None, hi=None, head=None, addressless=False, method=None):
+    def learn(self, kind, message, lo=None, hi=None, head=None, addressless=False, method=None, state_block=None):
         """Refine capabilities from a refusal (kept for the process lifetime)."""
         with self.lock:
             if kind == "addressless":
@@ -143,6 +172,10 @@ class Provider:
                 new = hint if hint else (max(1, cur // 2) if cur else None)
                 if new and (getattr(self, attr) is None or new < getattr(self, attr)):
                     setattr(self, attr, new)
+            elif kind == "archive" and state_block is not None and head is not None:
+                depth = max(0, head - state_block - 1)
+                if self.state_depth is None or depth < self.state_depth:
+                    self.state_depth = depth
             elif kind == "archive" and lo is not None and head is not None:
                 depth = max(0, head - lo - 1)
                 if self.archive_depth is None or depth < self.archive_depth:
@@ -159,7 +192,9 @@ class Provider:
         with self.lock:
             n = self.stats["requests"]
             return {"name": self.name, "max_span": self.max_span, "addressless": self.addressless,
-                    "archive_depth": self.archive_depth, "asset_transfers": self.asset_transfers,
+                    "archive_depth": self.archive_depth, "state_depth": self.state_depth,
+                    "denied": sorted(self.denied),
+                    "asset_transfers": self.asset_transfers,
                     "cooling": self.cooling(time.time()),
                     **{k: v for k, v in self.stats.items() if k != "latency_ms"},
                     "avg_latency_ms": round(self.stats["latency_ms"] / n, 1) if n else None}
@@ -199,6 +234,8 @@ class EvmClient:
                 self._backoff(a)
                 continue
             self._count(p, t0, error=status >= 400)
+            if status in (401, 403):                       # this endpoint refuses the method: no retry, no cooldown
+                raise _ProviderDown(f"{p.name}: HTTP {status}", denied=True)
             if status == 429:
                 self._rate_limited(p)
                 last = "HTTP 429"
@@ -243,9 +280,11 @@ class EvmClient:
         time.sleep(min(2.0, 0.25 * (2 ** a)) + random.random() * 0.2)
 
     def _candidates(self, need):
-        head = self._head[1] if need.get("from_block") is not None else None
+        head = self._head[1] if need.get("from_block") is not None or need.get("state_block") is not None else None
         now = time.time()
         ok = [p for p in self.providers if p.serves(need, head)]
+        if not ok:   # only temporarily denied providers left (a 403 may have been throttling): try them again
+            ok = [p for p in self.providers if p.serves(need, head, lenient=True)]
         if not ok:
             raise NoProvider(f"{self.chain}: no provider serves {sorted(k for k, v in need.items() if v)}")
         fresh = [p for p in ok if not p.cooling(now)]
@@ -255,14 +294,14 @@ class EvmClient:
     def call(self, method, params, need=None, prefer=None):
         """Single JSON-RPC call → result. need: capability requirements (see Provider.serves);
         prefer: sort key over providers (stable: configured order breaks ties)."""
-        need = need or {}
+        need = dict(need or {}, method=method)
         errors = []
         cands = self._candidates(need)
         for p in (sorted(cands, key=prefer) if prefer else cands):
             try:
                 data = self._send(p, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, 1)
             except _ProviderDown as e:
-                self._down(p); errors.append(str(e))
+                self._down(p, method if e.denied else None); errors.append(str(e))
                 continue
             err = data.get("error") if isinstance(data, dict) else None
             if not err:
@@ -272,7 +311,7 @@ class EvmClient:
             if kind == "fatal":
                 raise RpcError(code, msg, p.name)
             p.learn(kind, msg, need.get("from_block"), need.get("to_block"), self._head[1],
-                    addressless=bool(need.get("addressless")), method=method)
+                    addressless=bool(need.get("addressless")), method=method, state_block=need.get("state_block"))
             self._gen[0] += 1
             self._failover(p)
             errors.append(f"{p.name}: {kind}")
@@ -282,9 +321,12 @@ class EvmClient:
         """Many calls → results in order (None where that item errored). Split into the provider's batch size."""
         if not calls:
             return []
-        need = need or {}
+        methods = {m for m, _ in calls}
+        need = dict(need or {}, method=next(iter(methods)) if len(methods) == 1 else None)
         errors = []
         for p in self._candidates(need):
+            if methods & p.denied:
+                continue
             out, ok = [], True
             for i in range(0, len(calls), p.batch_max):
                 part = calls[i:i + p.batch_max]
@@ -292,7 +334,7 @@ class EvmClient:
                 try:
                     data = self._send(p, payload, len(part))
                 except _ProviderDown as e:
-                    self._down(p); errors.append(str(e)); ok = False
+                    self._down(p, need["method"] if e.denied else None); errors.append(str(e)); ok = False
                     break
                 if isinstance(data, dict):     # whole batch refused (batching unsupported or capability)
                     err = data.get("error") or {}
@@ -316,8 +358,11 @@ class EvmClient:
         with p.lock:
             p.stats["failovers"] += 1
 
-    def _down(self, p):
-        p.cool()
+    def _down(self, p, denied_method=None):
+        if denied_method:
+            p.deny(denied_method)
+        else:
+            p.cool()
         self._gen[0] += 1
         self._failover(p)
 
@@ -331,7 +376,7 @@ class EvmClient:
         return h
 
     def eth_call(self, to, data, block="latest"):
-        need = {} if block == "latest" else {"from_block": int(block, 16) if isinstance(block, str) else block}
+        need = {} if block == "latest" else {"state_block": int(block, 16) if isinstance(block, str) else block}
         return self.call("eth_call", [{"to": to, "data": data}, block if isinstance(block, str) else hex(block)], need)
 
     def iter_logs(self, lo, hi, address=None, topics=None):
@@ -343,7 +388,7 @@ class EvmClient:
         replans = 0
         while stack:
             a, b = stack.pop()
-            need = {"from_block": a, "to_block": b, "addressless": address is None}
+            need = {"from_block": a, "to_block": b, "addressless": address is None, "method": "eth_getLogs"}
             # widest provider first: one 10-block (Alchemy Free) provider must not dictate the windows
             widest = lambda p: -(p.span(address is None) or float("inf"))
             span = sorted(self._candidates(need), key=widest)[0].span(address is None)
@@ -399,4 +444,9 @@ class EvmClient:
 
 
 class _ProviderDown(Exception):
-    """Provider unusable for this request (transport / 5xx / persistent rate limit): fail over."""
+    """Provider unusable for this request (transport / 5xx / persistent rate limit): fail over.
+    denied — the endpoint refuses this method (HTTP 401/403): remember it, do not cool the provider down."""
+
+    def __init__(self, msg, denied=False):
+        super().__init__(msg)
+        self.denied = denied

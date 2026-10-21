@@ -292,7 +292,7 @@ class TestFetch(unittest.TestCase):
         with mock.patch.object(replay.market, "_ds", return_value=pairs):
             self.assertEqual(replay.fetch_mcaps("solana", [mint]), {mint: 42.0})
         with mock.patch.object(replay.market, "_ds") as ds:
-            self.assertEqual(replay.fetch_mcaps("base", [T[0]]), {})
+            self.assertEqual(replay.fetch_mcaps("ethereum", [T[0]]), {})
             ds.assert_not_called()
 
 

@@ -18,7 +18,7 @@ GT_BUDGET = 3.0   # seconds for the whole header (all attempts): the scan does n
 GT_FIRST = 1.5    # seconds for GT in fetch_market before switching to DexScreener (enough for 2 attempts on 429)
 DS = "https://api.dexscreener.com/tokens/v1"
 DS_BUDGET = 3.0   # seconds for DexScreener (all attempts)
-DS_CHAIN = {"robinhood": "robinhood", "solana": "solana"}  # GT network -> DexScreener chainId
+DS_CHAIN = {"robinhood": "robinhood", "solana": "solana", "bsc": "bsc", "base": "base"}  # GT network -> DexScreener chainId
 CHART_BUDGET = 4.0  # seconds for the whole chart (pools + candles + curve history)
 CHART_LIMIT = 1000  # candles per request (GT maximum)
 CURVE_DEX = "pump-fun"  # pump.fun bonding curve pool: after migration its candles are the start of the history
@@ -39,7 +39,7 @@ def clear_cache():
 
 
 def _key(token, network):
-    return network, token.lower() if network == "robinhood" else token
+    return network, token.lower() if token.startswith("0x") else token   # EVM addresses are case-insensitive
 
 
 def established_get(token, network="robinhood"):
@@ -143,7 +143,7 @@ def fetch_market(token, network="robinhood", now=None, budget=GT_BUDGET):
     as in GT) -- for the chart widget on the frontend. source -- "gt" | "dexscreener". A successful result is cached per token for GT_CACHE_TTL (shared by both sources).
     network -- GT network: "robinhood" | "solana" (Solana addresses are case-sensitive, we do not lowercase them).
     budget -- seconds for all attempts (the engine waits for the answer in the background longer than for the header)."""
-    tok = token.lower() if network == "robinhood" else token
+    tok = token.lower() if token.startswith("0x") else token   # EVM addresses are case-insensitive
     key = ("market", network, tok)
     hit = _cache_get(key)
     if hit is not None and not (hit["source"] == "gt" and gt_force_fail()):
@@ -253,7 +253,8 @@ def _ds_market(tok, network, now=None, budget=DS_BUDGET):
     pairs = [p for p in _ds(f"{DS}/{chain}/{tok}", budget) or [] if p.get("chainId") == chain]
     if not pairs:
         raise LookupError("no pairs")
-    same = (lambda x: (x or "").lower() == tok.lower()) if network == "robinhood" else (lambda x: x == tok)
+    # EVM addresses are case-insensitive (DexScreener returns checksummed ones); Solana mints are not
+    same = (lambda x: (x or "").lower() == tok.lower()) if tok.startswith("0x") else (lambda x: x == tok)
     f = lambda v: float(v) if v not in (None, "") else None
     liq = lambda p: f((p.get("liquidity") or {}).get("usd")) or 0.0
     base = [p for p in pairs if same((p.get("baseToken") or {}).get("address"))]
@@ -285,7 +286,7 @@ def _pool(p, tok, network):
     """Pool from the /tokens/{tok}/pools response: address, dex, liquidity, creation time, token price in USD."""
     a, rel = p.get("attributes") or {}, p.get("relationships") or {}
     base = ((rel.get("base_token") or {}).get("data") or {}).get("id", "")
-    same = (lambda x, y: x.lower() == y.lower()) if network == "robinhood" else (lambda x, y: x == y)
+    same = (lambda x, y: x.lower() == y.lower()) if tok.startswith("0x") else (lambda x, y: x == y)
     side = "base" if same(base.split("_", 1)[-1], tok) else "quote"
     price = a.get(f"{side}_token_price_usd")
     return {"address": a.get("address"), "dex": ((rel.get("dex") or {}).get("data") or {}).get("id"),
@@ -317,7 +318,7 @@ def fetch_chart(token, network="robinhood", now=None):
     but a curve pool exists (the token migrated), its candles before the first candle of the main pool go at the start
     (stitched). No candles received -- candles = [] and failed = True, the pool and price are returned anyway."""
     end = time.time() + CHART_BUDGET
-    tok = token.lower() if network == "robinhood" else token
+    tok = token.lower() if token.startswith("0x") else token   # EVM addresses are case-insensitive
     try:
         data = _gt(f"/{network}/tokens/{tok}/pools", budget=min(GT_BUDGET, end - time.time())).get("data") or []
         pools = sorted((_pool(p, tok, network) for p in data), key=lambda p: -p["liquidity"])

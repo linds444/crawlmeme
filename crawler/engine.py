@@ -8,6 +8,9 @@ import math, os, re, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as _CFTimeout
 
 from crawler.chains import bankr
+from crawler.chains import registry
+from crawler.chains.evm import networks as evm_networks
+from crawler.chains.evm import token as evm_token
 from crawler.chains import flap
 from crawler.chains import priority
 from crawler.chains import robinhood as ch
@@ -33,15 +36,26 @@ USE_FUNDING = False    # funding disabled: eth_inflows/outgoing_count are not ca
 
 ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 CHAINS = {"robinhood": ch, "solana": sol}
-NATIVE = {"robinhood": ("ETH", 10 ** 18), "solana": ("SOL", 10 ** 9)}   # unit of eth_in
+NATIVE = {"robinhood": ("ETH", 10 ** 18), "solana": ("SOL", 10 ** 9), "bsc": ("BNB", 10 ** 18),
+          "base": ("ETH", 10 ** 18)}   # unit of eth_in
 NOT_LAUNCHPAD = {"robinhood": "not a Pons V2 token", "solana": "not a pump.fun token"}
+PAD_LABEL = {"clanker": "Clanker", "fourmeme": "four.meme"}
 NOT_LAUNCHPAD_FLAP = "not a Pons V2 or Flap token"   # Robinhood with FLAP_ENABLED
 TOO_LARGE = "token history too large"                  # Pons: more than ch.SCAN_MAX_LOGS transfers
-GT_NETWORK = {"robinhood": "robinhood", "solana": "solana"}
+GT_NETWORK = {"robinhood": "robinhood", "solana": "solana", "bsc": "bsc", "base": "base"}
 
 
 class ScanError(Exception):
     """User-facing scan error (bad address, not Pons V2 / pump.fun, Solana disabled)."""
+
+
+class AmbiguousChain(ScanError):
+    """The 0x address has contract code on several enabled EVM chains: the caller must pick one (chains)."""
+
+    def __init__(self, token, chains):
+        names = ", ".join(evm_networks.NETWORKS[c].name for c in chains)
+        super().__init__(f"this address exists on several chains ({names}): choose one")
+        self.token, self.chains = token, chains
 
 
 PARTIAL_BUILDING = "Partial scan: building the full holder history, check again in {eta}"
@@ -81,10 +95,16 @@ def _ordinal(n):
 
 
 def not_launchpad(chain):
-    """Error text "not from a launchpad" based on the chain's enabled launchpads (switches FLAP_ENABLED, BANKR_ENABLED)."""
+    """Error text "not from a launchpad" based on the chain's enabled launchpads (FLAP_ENABLED, BANKR_ENABLED,
+    CLANKER_ENABLED, FOURMEME_ENABLED)."""
+    evm = [PAD_LABEL[n] for n in registry.launchpad_names(chain)]
+    if chain not in ("robinhood", "solana"):
+        if not evm:
+            return f"no launchpad is enabled for {evm_networks.NETWORKS[chain].name}"
+        return f"not a {evm[0]} token" if len(evm) == 1 else f"not a {', '.join(evm[:-1])} or {evm[-1]} token"
     if chain != "robinhood":
         return NOT_LAUNCHPAD[chain]
-    pads = ["Pons V2"] + (["Flap"] if flap.enabled() else []) + (["Bankr"] if bankr.enabled() else [])
+    pads = ["Pons V2"] + (["Flap"] if flap.enabled() else []) + (["Bankr"] if bankr.enabled() else []) + evm
     return f"not a {pads[0]} token" if len(pads) == 1 else \
         f"not a {', '.join(pads[:-1])} or {pads[-1]} token"
 
@@ -93,13 +113,31 @@ def solana_enabled():
     return os.environ.get("SOLANA_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 
 
-def chain_of(token):
+def chain_of(token, chain=None):
     """CA -> (chain, normalized address) or ScanError.
-    0x + 40 hex -> robinhood (lowercase); base58 32 bytes -> solana (case preserved);
-    Solana with SOLANA_ENABLED off -> "Solana support is coming soon"."""
+    0x + 40 hex (lowercase): the given chain if it is an enabled EVM chain; with only Robinhood enabled -> robinhood
+    without any request (V1 behaviour); otherwise the enabled EVM chains where the address has code
+    (registry.locate): one -> it, several -> AmbiguousChain (caller picks), none -> ScanError.
+    base58 32 bytes -> solana (case preserved); Solana with SOLANA_ENABLED off -> "Solana support is coming soon"."""
     token = (token or "").strip() if isinstance(token, str) or token is None else ""
+    chain = (chain or "").strip().lower() or None if isinstance(chain, str) or chain is None else None
     if ADDR_RE.match(token):
-        return "robinhood", token.lower()
+        token = token.lower()
+        enabled = evm_networks.enabled_chains()
+        if chain is not None:
+            if chain not in enabled:
+                raise ScanError(f"chain {chain} is not enabled")
+            return chain, token
+        if enabled == ["robinhood"]:
+            return "robinhood", token
+        found, unknown = registry.locate(token, enabled)
+        if len(found) == 1 and not unknown:
+            return found[0], token
+        if len(found) > 1 or (found and unknown):
+            raise AmbiguousChain(token, found + unknown)
+        if unknown:
+            raise ScanError("could not check every chain for this address (RPC unavailable): choose the chain")
+        raise ScanError("no contract at this address on " + ", ".join(evm_networks.NETWORKS[c].name for c in enabled))
     if sol.is_address(token):
         if not solana_enabled():
             raise ScanError("Solana support is coming soon")
@@ -258,15 +296,15 @@ def _reason(sc, base):
             "concentration": f"top 20 hold {m['concentration'] * 100:.1f}% of float"}[k]
 
 
-def scan(token, emit=lambda e: None):
+def scan(token, emit=lambda e: None, chain=None):
     """Full token scan. emit(event) -- events in README format. Returns result (dict).
     ScanError -- user-facing error (address, not Pons V2 / pump.fun, Solana disabled); other exceptions -- failure.
     The chain adapter returns token facts in a common shape (token_facts): transfers, supply,
     excluded addresses, market, liquidity token reserve (reserve) and, if the chain knows
     balances directly (Solana), base."""
     t0 = time.time()
-    chain, token = chain_of(token)
-    a = CHAINS[chain]
+    chain, token = chain_of(token, chain)
+    a = CHAINS.get(chain) or evm_networks.client(chain)   # BNB / Base: the adapter is picked per launchpad below
     # background scan (alerts recheck) runs under its own BACKGROUND_RPS limit: the budget grows by the same factor
     # to read as many wallets as a live scan
     deadline = t0 + BUDGET * (priority.background_scale(a.RPS) if priority.is_background() else 1.0)
@@ -316,8 +354,19 @@ def scan(token, emit=lambda e: None):
     # the rest -- Pons the old way, no extra requests
     flap_state = flap.detect(token) if chain == "robinhood" else None
     bankr_state = bankr.detect(token) if chain == "robinhood" and flap_state is None else None
+    # launchpads on the generic EVM adapter (Clanker, four.meme: chains/registry.py), before the Pons fallback
+    evm_hit = registry.detect(chain, token) if chain != "solana" and flap_state is None and bankr_state is None \
+        else None
     eth_box, eth_thread = {}, None
-    if bankr_state is not None:
+    if evm_hit is not None:
+        a = evm_hit[0]
+        try:
+            launch = a.get_launch(token)
+        except evm_token.HistoryUnavailable as e:
+            raise ScanError(str(e)) from None
+    elif chain not in CHAINS:
+        raise ScanError(not_launchpad(chain))
+    elif bankr_state is not None:
         a = bankr
         launch = bankr.get_launch(token, bankr_state)
     elif flap_state is not None:
@@ -336,10 +385,13 @@ def scan(token, emit=lambda e: None):
     ev("stage", "transfers")
     # Flap: a large token history is read in windows within the scan budget (deadline counted from scan start)
     try:
-        facts = a.token_facts(token, launch, deadline) if a in (flap, bankr) else a.token_facts(token, launch)
-    except ch.HistoryTooLarge as e:
+        facts = a.token_facts(token, launch, deadline) if a in (flap, bankr) or getattr(a, "FACTS_DEADLINE", False) \
+            else a.token_facts(token, launch)
+    except (ch.HistoryTooLarge, evm_token.HistoryTooLarge) as e:
         print(f"scan: {token} history too large ({e} logs, cap {ch.SCAN_MAX_LOGS})", flush=True)
         raise ScanError(TOO_LARGE) from None
+    except evm_token.HistoryUnavailable as e:   # older than every configured provider serves: no partial verdict
+        raise ScanError(str(e)) from None
     except bankr.TooActive as e:   # Bankr, index disabled: history larger than a regular scan -- no verdict
         if est := late_established():
             return est
@@ -504,7 +556,9 @@ def scan(token, emit=lambda e: None):
     ev("done", reason, score=sc["score"], band=sc["band"], headline=sc["headline"], rug=rug)
 
     extra = ({"launchpad": "flap", "flap": facts["flap"]} if "flap" in facts else
-             {"launchpad": "bankr", "bankr": facts["bankr"]} if "bankr" in facts else {})
+             {"launchpad": "bankr", "bankr": facts["bankr"]} if "bankr" in facts else
+             {"launchpad": facts["launchpad"], facts["launchpad"]: facts[facts["launchpad"]]} if "launchpad" in facts
+             else {})
     return extra | {
         "token": token, "chain": chain, "header": header,
         "launch": launch | {"ts": ts[launch["block"]]},

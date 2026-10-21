@@ -39,6 +39,8 @@ class FakeNode:
                 return {"error": {"code": -32602, "message": self.span_message.format(n=hi - lo + 1, m=self.max_span)}}
             out = [lg for lg in self.logs if lo <= int(lg["blockNumber"], 16) <= hi]
             return {"result": out[:self.cap] if self.cap else out}
+        if m == "eth_getTransactionReceipt":
+            return {"result": {"logs": []}}
         if m == "eth_call":
             if params[0]["data"] == "0xdead":
                 return {"error": {"code": 3, "message": "execution reverted"}}
@@ -181,6 +183,33 @@ class TestRouting(unittest.TestCase):
         with unittest.mock.patch.object(cl, "LOG_CAP", 100):
             logs = c.get_logs(a.head - 2_000, a.head)
         self.assertEqual(len(logs), len([1 for b in range(a.head - 50_000, a.head + 1, 7) if b >= a.head - 2_000]))
+
+    def test_span_planned_only_over_providers_serving_logs(self):
+        """A provider that denies eth_getLogs (Base official, BNB dataseed) must not dictate the window size."""
+        logs_node, no_logs = FakeNode(max_span=1_000), FakeNode()
+        c, _ = client(logs_node, no_logs, p0={"max_span": 1_000}, p1={"deny": {"eth_getLogs"}})
+        c.get_logs(logs_node.head - 2_999, logs_node.head, address="0xt")
+        self.assertEqual(logs_node.calls.count("eth_getLogs"), 3)
+        self.assertNotIn("eth_getLogs", no_logs.calls)
+        self.assertIn("eth_getLogs", c.providers[1].denied)            # declared denials never expire
+        with unittest.mock.patch("time.time", return_value=time.time() + 10_000):
+            self.assertIn("eth_getLogs", c.providers[1].denied)
+
+    def test_denied_method_remembered_without_cooldown(self):
+        class Forbidding(FakeNode):
+            def __call__(self, url, body, timeout):
+                if json.loads(body).get("method") == "eth_getTransactionReceipt":
+                    return 403, b"forbidden"
+                return super().__call__(url, body, timeout)
+        a, b = Forbidding(), FakeNode()
+        c, (pa, _) = client(a, b)
+        c.call("eth_getTransactionReceipt", ["0x1"])
+        self.assertIn("eth_getTransactionReceipt", pa.denied)
+        self.assertFalse(pa.cooling(time.time()))           # still used for everything else
+        with unittest.mock.patch("time.time", return_value=time.time() + 301):
+            self.assertNotIn("eth_getTransactionReceipt", pa.denied)   # learned denials expire (403 may be throttling)
+        c.head()
+        self.assertIn("eth_blockNumber", a.calls)
 
     def test_no_provider_for_asset_transfers(self):
         c, _ = client(FakeNode())

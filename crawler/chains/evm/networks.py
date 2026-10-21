@@ -80,15 +80,23 @@ NETWORKS = {
 }
 
 # Public endpoints and their measured capabilities (2026-10-21):
-#  robinhood: full archive; getLogs with address up to 10M blocks, without address up to 30k blocks.
-#  bsc/base (publicnode): getLogs needs an address; ~8k blocks of recent state/logs; >20k results refused.
+#  robinhood: every log since genesis (getLogs with address up to 10M blocks, without address up to 30k),
+#             but no historical state ("historical state … is not available"): state_depth 0.
+#  bsc/base (publicnode): getLogs needs an address; ~8k blocks of recent state/logs; >20k results refused;
+#                         receipts refused with HTTP 403 (served by bsc-dataseed / mainnet.base.org instead).
 PUBLIC = {
     "robinhood": [dict(name="robinhood-public", url="https://rpc.mainnet.chain.robinhood.com", rps=8,
-                       max_span=10_000_000, max_span_addressless=30_000)],
+                       max_span=10_000_000, max_span_addressless=30_000, state_depth=0)],
     "bsc": [dict(name="bsc-publicnode", url="https://bsc-rpc.publicnode.com", rps=5,
-                 addressless=False, archive_depth=8_000, max_span=5_000)],
+                 addressless=False, archive_depth=8_000, state_depth=8_000, max_span=5_000,
+                 deny={"eth_getTransactionReceipt"}),
+            # Binance's own node: receipts, blocks and calls, but eth_getLogs is refused ("limit exceeded")
+            dict(name="bsc-dataseed", url="https://bsc-dataseed.binance.org", rps=5, deny={"eth_getLogs"})],
     "base": [dict(name="base-publicnode", url="https://base-rpc.publicnode.com", rps=5,
-                  addressless=False, archive_depth=8_000, max_span=1_000)],
+                  addressless=False, archive_depth=8_000, state_depth=8_000, max_span=1_000,
+                  deny={"eth_getTransactionReceipt"}),
+             # the official endpoint: receipts, blocks and calls; eth_getLogs answered "request limit reached"
+             dict(name="base-official", url="https://mainnet.base.org", rps=5, deny={"eth_getLogs"})],
 }
 
 
@@ -110,9 +118,11 @@ def providers(key, env=os.environ, shared_throttle=None):
     if key == "robinhood" and (env.get("CRAWLER_RPC") or "").strip():
         own.insert(0, env["CRAWLER_RPC"].strip())
     rps = float(env.get(f"{key.upper()}_RPS") or 8)
+    public = {cfg["url"]: cfg for cfg in PUBLIC.get(key, [])}
     for i, url in enumerate(dict.fromkeys(own)):
+        caps = {k: v for k, v in public.get(url, {}).items() if k not in ("name", "url", "rps")}
         out.append(Provider(f"{key}-own-{i + 1}", url, rps=rps,
-                            throttle=shared_throttle if i == 0 and shared_throttle is not None else None))
+                            throttle=shared_throttle if i == 0 and shared_throttle is not None else None, **caps))
     alchemy = (env.get("ALCHEMY_API_KEY") or "").strip()
     if alchemy and net.alchemy_subdomain and not any("alchemy.com" in u for u in own):
         free = (env.get("ALCHEMY_TIER") or "free").strip().lower() == "free"
