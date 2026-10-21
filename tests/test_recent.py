@@ -94,7 +94,7 @@ class TestServerFeed(unittest.TestCase):
         with server._lock:
             server.JOBS.clear(); server.BY_TOKEN.clear(); server.RECENT.clear()
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = mock.patch.dict(os.environ, {"DRAW_DB_PATH": os.path.join(self.tmp.name, "f.db")})
+        self.env = mock.patch.dict(os.environ, {"LOCAL_DB_PATH": os.path.join(self.tmp.name, "f.db")})
         self.env.__enter__()
         self.fakes = fakes.patched()
         self.fakes.__enter__()

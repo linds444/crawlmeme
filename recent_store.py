@@ -1,4 +1,4 @@
-"""The "Recently scanned" feed: SQLite, the same file as the draw (DRAW_DB_PATH, default ./data/draw.db),
+"""The "Recently scanned" feed: SQLite, the same file as alerts (LOCAL_DB_PATH, default ./data/crawl.db),
 table recent_scans. One token, one row: a new scan of the same token updates it and moves it to the top.
 Only a completed scan with a verdict is written (errors and "not a token address" never get here).
 launchpad: "flap" / "bankr" for Flap and Bankr tokens (result["launchpad"]), else NULL; the column is added to an old DB at startup.
@@ -7,7 +7,6 @@ import os, time
 
 import db
 
-from draw_store import DEFAULT_PATH
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recent_scans (
@@ -32,7 +31,7 @@ def entry(result, ts=None):
 
 class RecentStore:
     def __init__(self, path=None):
-        self.path = path or os.environ.get("DRAW_DB_PATH") or DEFAULT_PATH
+        self.path = path or db.local_path()
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         self._lock = db.lock_for(self.path)   # one lock per file for all stores
         self.db = db.connect(self.path)

@@ -86,7 +86,7 @@ class TestRows(unittest.TestCase):
         self.assertTrue(opmem.worth(result(band="TOO_EARLY_OR_LATE", score=None)))
 
     def test_default_path_next_to_draw_db(self):
-        with mock.patch.dict(os.environ, {"DRAW_DB_PATH": "/data/draw.db", "OPMEM_DB_PATH": ""}):
+        with mock.patch.dict(os.environ, {"LOCAL_DB_PATH": "/data/draw.db", "OPMEM_DB_PATH": ""}):
             self.assertEqual(opmem.db_path(), "/data/memory.db")
         with mock.patch.dict(os.environ, {"OPMEM_DB_PATH": "/x/m.db"}):
             self.assertEqual(opmem.db_path(), "/x/m.db")
@@ -219,7 +219,7 @@ class TestServer(Base):
 
     def setUp(self):
         super().setUp()
-        self.env = mock.patch.dict(os.environ, {"DRAW_DB_PATH": os.path.join(self.tmp.name, "draw.db"),
+        self.env = mock.patch.dict(os.environ, {"LOCAL_DB_PATH": os.path.join(self.tmp.name, "draw.db"),
                                                 "OPMEM_DB_PATH": self.path, "ALERTS_ENABLED": "false"})
         self.env.__enter__()
         self.fakes = fakes.patched()

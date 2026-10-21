@@ -14,7 +14,6 @@ import server
 import test_alerts_recheck as tar
 from alerts_store import AlertsStore
 from recent_store import RecentStore
-from rewards_store import RewardsStore
 from bot import api as bot_api, text as T
 from test_bot import FakeAPI, make, private, drain, RH
 
@@ -24,7 +23,7 @@ class TestSqlite(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = os.path.join(self.tmp.name, "d.db")
-        self.stores = [RecentStore(self.path), AlertsStore(self.path), RewardsStore(self.path)]
+        self.stores = [RecentStore(self.path), AlertsStore(self.path)]
 
     def tearDown(self):
         for s in self.stores:
@@ -32,14 +31,13 @@ class TestSqlite(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_wal_timeout_shared_lock(self):
-        rs, al, rw = self.stores
+        rs, al = self.stores
         self.assertEqual(rs.db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
         self.assertEqual(al.db.execute("PRAGMA busy_timeout").fetchone()[0], 5000)
         self.assertIs(rs._lock, al._lock)
-        self.assertIs(al._lock, rw._lock)
 
     def test_concurrent_writers_no_lock_errors(self):
-        rs, al, rw = self.stores
+        rs, al = self.stores
         errors = []
 
         def run(fn):
@@ -51,9 +49,8 @@ class TestSqlite(unittest.TestCase):
 
         res = lambda i: {"token": f"0x{i:040x}", "band": "SAFE", "score": 80, "header": {"ticker": "T"}}
         jobs = [lambda i: rs.record(res(i)),
-                lambda i: al.watch(i, f"0x{i:040x}", "robinhood", now=int(time.time())),
-                lambda i: rw.set_meta(f"k{i}", {"v": i})]
-        ts = [threading.Thread(target=run, args=(f,)) for f in jobs for _ in range(2)]
+                lambda i: al.watch(i, f"0x{i:040x}", "robinhood", now=int(time.time()))]
+        ts = [threading.Thread(target=run, args=(f,)) for f in jobs for _ in range(3)]
         for t in ts:
             t.start()
         for t in ts:
@@ -316,7 +313,7 @@ class TestServerBusy(unittest.TestCase):
         self.fakes = fakes.patched()
         self.fakes.__enter__()
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = mock.patch.dict(os.environ, {"DRAW_DB_PATH": os.path.join(self.tmp.name, "t.db"),
+        self.env = mock.patch.dict(os.environ, {"LOCAL_DB_PATH": os.path.join(self.tmp.name, "t.db"),
                                                 "MEMORY_SOFT_LIMIT_MB": "0"})
         self.env.__enter__()
 
@@ -326,7 +323,7 @@ class TestServerBusy(unittest.TestCase):
                 break
             time.sleep(0.05)
         with server._stores_lock:
-            for stores in (server._recent_stores, server._rw_stores):
+            for stores in (server._recent_stores, server._alerts_stores):
                 for st in stores.values():
                     st.close()
                 stores.clear()
@@ -418,18 +415,6 @@ class TestServerBusy(unittest.TestCase):
         self.assertEqual(tail, ", last min: 1 started, 1 busy")
         self.assertEqual(server.scan_stats()[1], ", last min: 0 started, 0 busy")
 
-    def test_rewards_db_failure_is_503_and_scan_lives(self):
-        locked = sqlite3.OperationalError("database is locked")
-        with mock.patch.dict(os.environ, {"REWARDS_ENABLED": "true"}), \
-                mock.patch.object(server, "rewards_store", side_effect=locked):
-            code, d, _ = self.request("/api/rewards/status")
-            self.assertEqual((code, d), (503, {"error": "temporarily unavailable"}))
-            code, _, _ = self.request("/api/rewards/history?kind=burns")
-            self.assertEqual(code, 503)
-        _, r = self.scan_done()
-        self.assertIn("result", r)
-        self.assertEqual(self.request("/health")[0], 200)
-
     def test_recent_db_failure_does_not_break_scan(self):
         with mock.patch.object(server, "recent_store", side_effect=sqlite3.OperationalError("database is locked")):
             _, r = self.scan_done()
@@ -451,38 +436,6 @@ class TestPollingLoad(TestServerBusy):
         except urllib.error.HTTPError as e:
             with e:
                 return e.code, json.loads(e.read()), dict(e.headers)
-
-    def test_rewards_status_cached(self):
-        import rewards_service as rs
-        calls = []
-        real = rs.status_json
-        with mock.patch.dict(os.environ, {"REWARDS_ENABLED": "true"}), \
-                mock.patch.object(rs, "status_json", side_effect=lambda *a, **k: calls.append(1) or real(*a, **k)):
-            code, a, h = self.request("/api/rewards/status")
-            self.assertEqual(code, 200)
-            self.assertEqual(h["cache-control"], "public, max-age=30")
-            code, b, _ = self.request("/api/rewards/status")
-            self.assertEqual(len(calls), 1)                          # second — from memory, no SQLite
-            self.assertEqual({**a, "now": None}, {**b, "now": None})
-            self.assertIn("now", b)
-            with mock.patch.object(server, "STATUS_TTL", 0):
-                self.request("/api/rewards/status")
-            self.assertEqual(len(calls), 2)
-
-    def test_status_error_not_cached(self):
-        with mock.patch.dict(os.environ, {"REWARDS_ENABLED": "true"}):
-            with mock.patch.object(server, "rewards_store", side_effect=sqlite3.OperationalError("database is locked")):
-                self.assertEqual(self.request("/api/rewards/status")[0], 503)
-            self.assertEqual(self.request("/api/rewards/status")[0], 200)
-
-    def test_draw_status_and_config_cached(self):
-        import draw_service as ds
-        with mock.patch.object(ds, "status_json", return_value={"enabled": False}) as st:
-            for _ in range(3):
-                code, d, h = self.request("/api/draw/status")
-            self.assertEqual((code, d, h["cache-control"], st.call_count), (200, {"enabled": False}, "public, max-age=30", 1))
-        code, _, h = self.request("/api/config")
-        self.assertEqual((code, h["cache-control"]), (200, "public, max-age=30"))
 
     def test_recent_cached_15s(self):
         self.request("/api/recent")

@@ -7,10 +7,10 @@ https://crawlscan.fun), TRADE_URL_ROBINHOOD / TRADE_URL_SOLANA: Trade on Axiom b
 ALERTS_API_SECRET: the site subscriptions API secret (absent → no alerts in the bot; never printed). Long polling getUpdates (timeout=30): only one
 bot instance can run at a time, a second one gets 409 Conflict.
 
-DMs: token address (or /scan <address>) → scan; /start, /help, /rewards. Groups: only /scan <address>
-and /rewards (and /scan@botname, /rewards@botname). Alerts (DMs only, if the site's /api/config → alerts and
+DMs: token address (or /scan <address>) → scan; /start, /help. Groups: only /scan <address>
+(and /scan@botname). Alerts (DMs only, if the site's /api/config → alerts and
 ALERTS_API_SECRET is set): /watch <address>, /watchlist, /unwatch <address>, [Watch] button under the verdict, [Unwatch] under
-a notification (notifications are sent by the site); otherwise "coming soon". /rewards: rewards and burns status from the site (/api/rewards/status). Scan: immediate "crawling…" reply, then that same message is edited into the verdict.
+a notification (notifications are sent by the site); otherwise "coming soon". Scan: immediate "crawling…" reply, then that same message is edited into the verdict.
 Limits: 1 scan per user per USER_COOLDOWN seconds, at most WORKERS scans at once (the rest wait in the queue).
 """
 import math, os, queue, sys, threading, time, traceback
@@ -34,8 +34,7 @@ POLL_EVERY = 1.5       # seconds between /api/result requests
 LONG_POLL = 30         # getUpdates timeout
 COMMANDS = [{"command": "start", "description": "What this bot does"},
             {"command": "scan", "description": "Scan a token: /scan <address>"},
-            {"command": "help", "description": "How to read a verdict"},
-            {"command": "rewards", "description": "Next holder draw, last winner, burns"}]
+            {"command": "help", "description": "How to read a verdict"}]
 WATCH_COMMANDS = [{"command": "watch", "description": "Get alerts for a token: /watch <address>"},
                   {"command": "watchlist", "description": "Tokens you watch"},
                   {"command": "unwatch", "description": "Stop alerts: /unwatch <address>"}]
@@ -72,7 +71,7 @@ class Bot:
         self.lock = threading.Lock()
         self.banner = banner
         self.banner_id = None        # banner file_id after the first upload: later sends skip the file
-        # site requests outside the polling loop (/rewards): by default a separate thread
+        # site requests outside the polling loop (/start, /help): by default a separate thread
         self.trade_urls = trade_urls or trade.templates()   # {chain: template} for [Trade on Axiom]
         self.spawn = spawn or (lambda f: threading.Thread(target=f, daemon=True).start())
         self.alerts_seen = None      # (clock(), whether alerts are enabled on the site)
@@ -157,8 +156,6 @@ class Bot:
                 return self.spawn(lambda: self.send(chat_id, T.help_text(*self.launchpads())))
             if cmd == "scan":
                 return self.scan_command(chat_id, user.get("id"), arg, None, private=True)
-            if cmd == "rewards":
-                return self.rewards_command(chat_id, None)
             if cmd in ("watch", "unwatch", "watchlist"):
                 return self.alerts_command(chat_id, cmd, arg)
             found = T.find_address(txt) if cmd is None else None
@@ -167,8 +164,6 @@ class Bot:
             return self.send(chat_id, T.HINT)
         if chat.get("type") in ("group", "supergroup") and cmd == "scan":
             return self.scan_command(chat_id, user.get("id"), arg, mid)
-        if chat.get("type") in ("group", "supergroup") and cmd == "rewards":
-            return self.rewards_command(chat_id, mid)
 
     def handle_callback(self, cq):
         self.call("answerCallbackQuery", callback_query_id=cq.get("id"))
@@ -199,24 +194,6 @@ class Bot:
         if not found:
             return self.send(chat_id, T.SCAN_USAGE, reply_to=reply_to)
         self.request_scan(chat_id, user_id, found[1], reply_to, private)
-
-    def rewards_command(self, chat_id, reply_to):
-        self.spawn(lambda: self.send(chat_id, *self.rewards_text(), reply_to=reply_to))
-
-    def rewards_text(self):
-        """Site /api/rewards/status → (html, buttons). Site unreachable → UNREACHABLE without buttons."""
-        try:
-            st = self.api.rewards_status()
-        except (ApiError, Rejected) as e:
-            self.log(f"api rewards: {e}")
-            return T.UNREACHABLE, None
-        try:
-            return T.rewards(st), T.REWARDS_BUTTON
-        except Exception:
-            self.log("rewards text:\n" + self.tg.redact(traceback.format_exc()))
-            return T.UNREACHABLE, None
-
-    # --- alerts: subscriptions (the site stores them, the bot only asks) ---------------------------------
 
     def alerts_on(self):
         """Alerts are enabled: the bot has the secret and the site answers /api/config → alerts. Remembered for ALERTS_CHECK_TTL seconds;

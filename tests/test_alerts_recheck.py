@@ -301,7 +301,7 @@ class TestServerPath(unittest.TestCase):
         with server._lock:
             server.JOBS.clear(); server.BY_TOKEN.clear(); server.RECENT.clear()
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = mock.patch.dict(os.environ, {"DRAW_DB_PATH": os.path.join(self.tmp.name, "s.db"),
+        self.env = mock.patch.dict(os.environ, {"LOCAL_DB_PATH": os.path.join(self.tmp.name, "s.db"),
                                                 "ALERTS_ENABLED": "true"})
         self.env.__enter__()
         self.msgs = []

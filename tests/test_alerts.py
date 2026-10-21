@@ -222,7 +222,7 @@ class TestServerSnapshots(unittest.TestCase):
         early.clear_cache()
         self.tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.tmp.name, "a.db")
-        self.env = mock.patch.dict(os.environ, {"DRAW_DB_PATH": self.db, "ALERTS_ENABLED": "true"})
+        self.env = mock.patch.dict(os.environ, {"LOCAL_DB_PATH": self.db, "ALERTS_ENABLED": "true"})
         self.env.__enter__()
         self.fakes = fakes.patched()
         self.fakes.__enter__()
@@ -379,7 +379,7 @@ class TestWatchAPI(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = mock.patch.dict(os.environ, {"DRAW_DB_PATH": os.path.join(self.tmp.name, "w.db"),
+        self.env = mock.patch.dict(os.environ, {"LOCAL_DB_PATH": os.path.join(self.tmp.name, "w.db"),
                                                 "ALERTS_ENABLED": "true", "ALERTS_API_SECRET": SECRET})
         self.env.__enter__()
         self.fakes = fakes.patched()     # market.fetch_market → {} (market did not respond), no network

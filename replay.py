@@ -2,7 +2,7 @@
 default (REPLAY_ENABLED); when disabled -- no thread, no page, no /api/replay.
 
 Source -- operator memory (opmem.py, memory.db): the scans table with the market at scan time. Own replay table in
-the same file, own connection (WAL, busy_timeout) -- nothing shared with draw.db. The scan path, bot and draw are untouched:
+the same file, own connection (WAL, busy_timeout) -- nothing shared with the feed and alerts file. The scan path and bot are untouched:
 the replay-check thread does not hit RPC (neither Alchemy nor Solana) -- only the public DexScreener, in batches of up to 30 tokens
 per request (/tokens/v1/{chainId}/{a,b,...}; DexScreener limit -- 300 requests per minute, we make a handful,
 with PAUSE between requests). Errors -- just a log line.

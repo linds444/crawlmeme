@@ -1,8 +1,8 @@
 """Operator memory: we accumulate which wallets and operators show up in which tokens. Write-only -- does not
 affect the verdict. Disabled by default (OPMEM_ENABLED); when disabled -- the database is not opened, the thread does not start.
 
-Own SQLite database (OPMEM_DB_PATH, default memory.db next to DRAW_DB_PATH), own connection, WAL -- not a single
-lock shared with draw.db. The scan puts the finished result into a bounded queue (record: O(1), no database) and moves
+Own SQLite database (OPMEM_DB_PATH, default memory.db next to LOCAL_DB_PATH), own connection, WAL -- not a single
+lock shared with the feed and alerts file. The scan puts the finished result into a bounded queue (record: O(1), no database) and moves
 on; parsing and writing happen in the background opmem-writer thread. Queue full -- the result is lost (a log line at most
 once a minute). Any write error -- just a log line. No new network requests: everything comes from the scan result.
 
@@ -27,7 +27,6 @@ open (migrate), rows are left untouched.
 import hashlib, json, os, queue, sqlite3, threading, time
 
 import db
-from draw_store import DEFAULT_PATH as DRAW_DEFAULT_PATH
 
 QUEUE_MAX = 500            # results waiting to be written; more -- dropped
 DROP_LOG_EVERY = 60        # seconds: overflow log line at most this often
@@ -79,8 +78,7 @@ def db_path():
     p = os.environ.get("OPMEM_DB_PATH", "").strip()
     if p:
         return p
-    draw = os.environ.get("DRAW_DB_PATH", "").strip() or DRAW_DEFAULT_PATH
-    return os.path.join(os.path.dirname(os.path.abspath(draw)), "memory.db")
+    return os.path.join(os.path.dirname(os.path.abspath(db.local_path())), "memory.db")
 
 
 def min_interval_s():

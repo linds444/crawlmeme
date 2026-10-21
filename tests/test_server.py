@@ -26,9 +26,9 @@ class TestServer(unittest.TestCase):
             server.JOBS.clear(); server.BY_TOKEN.clear()
         self.fakes = fakes.patched()
         self.fakes.__enter__()
-        # the feed writes to DRAW_DB_PATH: in tests — a temp file, not ./data/draw.db
+        # the feed writes to LOCAL_DB_PATH: in tests — a temp file, not ./data/draw.db
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = mock.patch.dict(os.environ, {"DRAW_DB_PATH": os.path.join(self.tmp.name, "t.db")})
+        self.env = mock.patch.dict(os.environ, {"LOCAL_DB_PATH": os.path.join(self.tmp.name, "t.db")})
         self.env.__enter__()
 
     def tearDown(self):

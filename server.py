@@ -22,24 +22,6 @@ Read-only: the scan runs in the background, the browser polls for events.
   GET  /health
   HEAD — on any GET path: same status and headers, no body
 
-Holder draw (only with DRAW_ENABLED=true, otherwise 404; status always responds):
-  GET  /api/draw/status                  -> enabled or not, token, next draw, today's snapshots and weights
-  GET  /api/draw/latest                  -> latest draw
-  GET  /api/draw/history?limit=30        -> draws, newest first (limit up to 365)
-  GET  /api/draw/<YYYY-MM-DD>/participants -> full list of participants with weights
-  GET  /api/draw/<YYYY-MM-DD>/verify     -> input data and winner recomputation
-  POST /api/draw/<YYYY-MM-DD>/payout     -> admin: X-Admin-Token == ADMIN_TOKEN,
-                                            {"prize_amount", "prize_currency", "payout_tx"}; otherwise 403
-
-Token Burn & Holder Rewards, Robinhood (only with REWARDS_ENABLED=true, otherwise 404; status always responds):
-  GET  /api/rewards/status               -> token, next draw and scheduled burn, latest burn,
-                                            total burned, latest winner (weight, chance, payout), participants
-  GET  /api/rewards/history?limit=30     -> draws and burns, newest first (limit up to 365)
-  GET  /api/rewards/history?kind=burns|draws&limit=10&before=T -> full history page: {"kind", "total",
-                                            "items", "next_before"}; limit 1–50, before — unix time or ISO 8601
-  GET  /api/rewards/<YYYY-MM-DD>/participants -> full list of participants with weights
-  GET  /api/rewards/<YYYY-MM-DD>/verify  -> input data and winner recomputation
-
 Alerts, subscriptions for the bot (only with ALERTS_ENABLED=true, otherwise 404; X-Alerts-Secret == ALERTS_API_SECRET, otherwise 403):
   POST /api/alerts/watch {"chat_id", "token"}   -> subscribe for WATCH_DAYS days; 409 — already WATCH_LIMIT tokens,
                                                    422 — token too established, 400 — bad address
@@ -51,8 +33,7 @@ Alerts, subscriptions for the bot (only with ALERTS_ENABLED=true, otherwise 404;
 
 Token result is cached for 10 minutes: a repeat scan returns the saved events immediately.
 Chart is cached for 10 minutes (without candles — 1 minute); a GeckoTerminal failure gives empty candles, not an error.
-/api/rewards/status, /api/draw/status and /api/config are cached in memory for 30 seconds (Cache-Control: public, max-age=30 —
-for Cloudflare; the rewards status field now is always current); failures are not cached.
+/api/config is cached in memory for 30 seconds (Cache-Control: public, max-age=30 — for Cloudflare); failures are not cached.
 New scans per IP (CF-Connecting-IP) — at most SCAN_RATE_PER_MIN per minute, otherwise 429 rate_limited with Retry-After;
 user agent crawlscan-bot — SCAN_RATE_BOT_PER_MIN, a valid X-Alerts-Secret (our bot) — no limit.
 The /api/recent feed is cached for 15 seconds (a scan write resets the cache; a read that overlapped a write is not cached);
@@ -63,20 +44,20 @@ scheduled rechecks of watched tokens — alerts_recheck.py (own thread, yields t
 With OPMEM_ENABLED=true scan and recheck results go to the operator memory queue (opmem.py: own database
 memory.db, own writer thread, a token at most once per OPMEM_MIN_INTERVAL_H); the scan does not wait for the write.
 With REPLAY_ENABLED=true — Rug Replay (replay.py): its own thread every REPLAY_CHECK_MIN checks the market cap of DANGER tokens from
-memory.db against DexScreener (no RPC), /replay and /api/replay; the scan, bot and draw are not touched.
+memory.db against DexScreener (no RPC), /replay and /api/replay; the scan and bot are not touched.
 At most 3 concurrent scans (the rest wait for a slot), at most SCAN_QUEUE_MAX in the queue; beyond the queue — 503 busy
 with Retry-After (cache and an already running scan of the same token are served as before). Process memory (memguard.py) above the soft
 threshold after cache reset — scans up to MAX_CONCURRENT without a queue, above the hard one — 503 busy. Once a minute the log gets
-a line with memory, number of active scans and per-minute counters. A database failure in /api/rewards/* and /api/draw/* — 503, the process and scans keep running.
+a line with memory, number of active scans and per-minute counters.
 PORT from env, default 8000.
 """
 import hashlib, hmac, json, os, re, threading, time, uuid
-from datetime import datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 import alerts
+import db
 import alerts_notify
 import alerts_recheck
 import detect
@@ -88,10 +69,6 @@ import memguard
 import opmem
 import replay
 import trade
-import draw_service as ds
-import rewards_service as rs
-from draw_store import Store
-from rewards_store import RewardsStore
 from recent_store import RecentStore
 from alerts_store import AlertsStore
 from bot.tg import TelegramError
@@ -115,7 +92,7 @@ CHART_EMPTY_TTL = 60       # seconds: cache for a chart without candles (GT did 
 CHART_STALE_TTL = 6 * 3600 # seconds: the last successful chart is served (with stale_at) while GT is not responding
 CHART_MAX = 500            # charts in memory, old ones are evicted
 RECENT_TTL = 15            # seconds: /api/recent feed cache (and max-age for Cloudflare)
-STATUS_TTL = 30            # seconds: cache for /api/rewards/status, /api/draw/status, /api/config (and max-age)
+STATUS_TTL = 30            # seconds: cache for /api/config (and max-age)
 STATUS_CACHE = f"public, max-age={STATUS_TTL}"
 REPLAY_TTL = 60            # seconds: /api/replay cache (and max-age)
 RECENT_DEFAULT = 12        # feed entries by default
@@ -361,69 +338,18 @@ def get_chart(token):
     return res
 
 
-DRAW_PATH = re.compile(r"^/api/draw/(\d{4}-\d{2}-\d{2})/(participants|verify|payout)$")
-_stores, _stores_lock = {}, threading.Lock()
-
-
-def draw_store():
-    """Draw store (one per DRAW_DB_PATH) or None if the draw is disabled."""
-    if not ds.enabled():
-        return None
-    path = os.environ.get("DRAW_DB_PATH") or ""
-    with _stores_lock:
-        if path not in _stores:
-            _stores[path] = Store(path or None)
-        return _stores[path]
-
-
-REWARDS_PATH = re.compile(r"^/api/rewards/(\d{4}-\d{2}-\d{2})/(participants|verify)$")
-_rw_stores = {}
-
-
-def rewards_store():
-    """Rewards & Burns store (file DRAW_DB_PATH) or None if disabled."""
-    if not rs.enabled():
-        return None
-    path = os.environ.get("DRAW_DB_PATH") or ""
-    with _stores_lock:
-        if path not in _rw_stores:
-            _rw_stores[path] = RewardsStore(path or None)
-        return _rw_stores[path]
-
-
-def history_args(q):
-    """kind, limit, before from a /api/rewards/history?kind=burns|draws&limit=10&before=... page request.
-    before — unix time (seconds) or ISO 8601; error — ValueError with text for the 400."""
-    kind = q["kind"][0]
-    if kind not in ("burns", "draws"):
-        raise ValueError("kind must be burns or draws")
-    try:
-        limit = int((q.get("limit") or ["10"])[0])
-    except ValueError:
-        raise ValueError("limit must be an integer") from None
-    raw = (q.get("before") or [""])[0].strip()
-    before = None
-    if raw:
-        try:
-            if raw.replace(".", "", 1).isdigit():
-                before = int(float(raw))
-            else:   # ISO without timezone — UTC
-                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-                before = int((dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp())
-        except (ValueError, OverflowError):
-            raise ValueError("before must be unix time or ISO 8601") from None
-    return kind, limit, before
+_stores_lock = threading.Lock()
 
 
 _recent_stores = {}
 
 
 def recent_store():
-    """Feed store (file DRAW_DB_PATH), one per path."""
-    path = os.environ.get("DRAW_DB_PATH") or ""
+    """Feed store (file LOCAL_DB_PATH), one per path."""
+    path = db.local_path()
     with _stores_lock:
         if path not in _recent_stores:
-            _recent_stores[path] = RecentStore(path or None)
+            _recent_stores[path] = RecentStore(path)
         return _recent_stores[path]
 
 
@@ -443,11 +369,11 @@ _alerts_stores = {}
 
 
 def alerts_store():
-    """Alerts snapshot store (file DRAW_DB_PATH), one per path."""
-    path = os.environ.get("DRAW_DB_PATH") or ""
+    """Alerts snapshot store (file LOCAL_DB_PATH), one per path."""
+    path = db.local_path()
     with _stores_lock:
         if path not in _alerts_stores:
-            _alerts_stores[path] = AlertsStore(path or None)
+            _alerts_stores[path] = AlertsStore(path)
         return _alerts_stores[path]
 
 
@@ -653,11 +579,6 @@ def cached_response(key, ttl, fn):
     return body
 
 
-def _fresh_now(body):
-    """The cached status has a current now field (the bot computes "in 5h 12m" from it)."""
-    return body | {"now": rs._iso(time.time())} if isinstance(body, dict) and "now" in body else body
-
-
 def scan_client(headers, addr):
     """(key, per-minute limit) for the new-scan limit or None (no limit). IP — CF-Connecting-IP (the site is behind
     Cloudflare), otherwise the connection address. A valid X-Alerts-Secret — our bot, no limit; user agent crawlscan-bot —
@@ -687,12 +608,6 @@ def get_recent(limit):
         if _RECENT_GEN[0] == gen:   # a scan was written while we were reading — this response is already stale, do not cache it
             RECENT[limit] = (now, out)
     return out
-
-
-def admin_ok(header):
-    """X-Admin-Token matches ADMIN_TOKEN (constant-time comparison). ADMIN_TOKEN not set — always no."""
-    token = os.environ.get("ADMIN_TOKEN") or ""
-    return bool(token) and bool(header) and hmac.compare_digest(header.encode(), token.encode())
 
 
 class H(BaseHTTPRequestHandler):
@@ -751,94 +666,6 @@ class H(BaseHTTPRequestHandler):
         with _lock:
             return JOBS.get(jid)
 
-    def _draw_payout(self, day):
-        if not admin_ok(self.headers.get("X-Admin-Token")):
-            return self._send(403, {"error": "forbidden"})
-        store = draw_store()
-        if store is None:
-            return self._send(404, {"error": "draw is disabled"})
-        try:
-            n = int(self.headers.get("content-length") or 0)
-            body = json.loads(self.rfile.read(n) or b"{}")
-            amount, currency, tx = body["prize_amount"], body["prize_currency"], body["payout_tx"]
-            if not isinstance(currency, str) or not isinstance(tx, str) or not currency or not tx \
-                    or isinstance(amount, bool) or float(amount) < 0:
-                raise ValueError
-        except (ValueError, KeyError, TypeError, AttributeError):
-            return self._send(400, {"error": "need prize_amount, prize_currency, payout_tx"})
-        res = store.set_payout(day, amount, currency, tx)
-        if res == "not_found":
-            return self._send(404, {"error": "no draw for this day"})
-        if res in ("no_winner", "conflict"):
-            return self._send(409, {"error": "no winner, prize carries over" if res == "no_winner"
-                                    else "payout already recorded with another tx"})
-        return self._send(200, ds.draw_json(store.get_draw(day)))
-
-    def _draw_get(self, path, q):
-        if path == "/api/draw/status":
-            body = cached_response(("draw", os.environ.get("DRAW_DB_PATH")), STATUS_TTL,
-                                   lambda: ds.status_json(draw_store(), ds.config()))
-            return self._send(200, _fresh_now(body), cache=STATUS_CACHE)
-        store = draw_store()
-        if store is None:
-            return self._send(404, {"error": "draw is disabled"})
-        if path == "/api/draw/latest":
-            row = store.latest_draw()
-            return self._send(200, ds.draw_json(row)) if row else self._send(404, {"error": "no draws yet"})
-        if path == "/api/draw/history":
-            try:
-                limit = min(365, max(1, int((q.get("limit") or ["30"])[0])))
-            except ValueError:
-                limit = 30
-            return self._send(200, {"draws": [ds.draw_json(r) for r in store.history(limit)]})
-        m = DRAW_PATH.match(path)
-        if not m or m.group(2) == "payout":
-            return self._send(404, {"error": "not found"})
-        day, what = m.groups()
-        row = store.get_draw(day)
-        if not row:
-            return self._send(404, {"error": "no draw for this day"})
-        if what == "participants":
-            parts = store.participants(day)
-            return self._send(200, {"day": day, "list_hash": row["list_hash"], "total_weight": int(row["total_weight"]),
-                                    "participants": [{"address": a, "weight": w} for a, w in sorted(parts.items())]})
-        return self._send(200, ds.verify_json(store, day))
-
-    def _rewards_get(self, path, q):
-        cfg = rs.config()
-        if path == "/api/rewards/status":
-            body = cached_response(("rewards", os.environ.get("DRAW_DB_PATH"), cfg["enabled"], cfg["token"]), STATUS_TTL,
-                                   lambda: rs.status_json(rewards_store(), cfg))
-            return self._send(200, _fresh_now(body), cache=STATUS_CACHE)
-        store = rewards_store()
-        if store is None:
-            return self._send(404, {"error": "rewards are disabled"})
-        if path == "/api/rewards/history" and q.get("kind"):
-            try:
-                return self._send(200, rs.history_page(store, cfg, *history_args(q)))
-            except ValueError as e:
-                return self._send(400, {"error": str(e)})
-        if path == "/api/rewards/history":
-            try:
-                limit = min(365, max(1, int((q.get("limit") or ["30"])[0])))
-            except ValueError:
-                limit = 30
-            return self._send(200, rs.history_json(store, cfg, limit))
-        m = REWARDS_PATH.match(path)
-        if not m:
-            return self._send(404, {"error": "not found"})
-        day, what = m.groups()
-        body = rs.participants_json(store, day) if what == "participants" else rs.verify_json(store, day)
-        return self._send(200, body) if body else self._send(404, {"error": "no draw for this day"})
-
-    def _db_guard(self, path, fn, *args):
-        """/api/draw/*, /api/rewards/*: database failure (database is locked etc.) — 503, the process and scans keep running."""
-        try:
-            return fn(*args)
-        except Exception as e:
-            print(f"db: {path} failed: {type(e).__name__}: {e}", flush=True)
-            return self._send(503, {"error": "temporarily unavailable"}, headers={"retry-after": str(RETRY_AFTER)})
-
     def _alerts(self, method, path, q):
         if not alerts.enabled():
             return self._send(404, {"error": "alerts are disabled"})
@@ -863,9 +690,6 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path.startswith("/api/alerts/"):
             return self._alerts("POST", u.path, parse_qs(u.query))
-        m = DRAW_PATH.match(urlparse(self.path).path)
-        if m and m.group(2) == "payout":
-            return self._db_guard(u.path, self._draw_payout, m.group(1))
         if urlparse(self.path).path != "/api/scan":
             return self._send(404, {"error": "not found"})
         try:
@@ -891,10 +715,6 @@ class H(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path == "/health":
             return self._send(200, {"ok": True})
-        if u.path.startswith("/api/draw/"):
-            return self._db_guard(u.path, self._draw_get, u.path, q)
-        if u.path.startswith("/api/rewards/"):
-            return self._db_guard(u.path, self._rewards_get, u.path, q)
         if u.path.startswith("/api/alerts/"):
             return self._alerts("GET", u.path, q)
         if u.path == "/api/config":  # frontend and bot: which chains are enabled (SOLANA_ENABLED), alerts (ALERTS_ENABLED), Trade on Axiom
@@ -983,29 +803,6 @@ class H(BaseHTTPRequestHandler):
         pass
 
 
-def start_draw_scheduler():
-    """Background draw scheduler — only with DRAW_ENABLED=true and DRAW_MINT set."""
-    cfg = ds.config()
-    if not cfg["enabled"]:
-        return None
-    if not cfg["mint"]:
-        ds.log("DRAW_ENABLED=true, but DRAW_MINT is empty: scheduler not started")
-        return None
-    sch = ds.Scheduler(draw_store(), cfg)
-    sch.start()
-    return sch
-
-
-def start_rewards_scheduler():
-    """Rewards & Burns background thread — only with REWARDS_ENABLED=true."""
-    cfg = rs.config()
-    if not cfg["enabled"]:
-        return None
-    sch = rs.Scheduler(rewards_store(), cfg)
-    sch.start()
-    return sch
-
-
 def recheck_scan(token):
     """Recheck: a regular engine scan without a job, feed or events."""
     return engine.scan(token)
@@ -1047,8 +844,6 @@ if __name__ == "__main__":
     print(f"rh-crawler on http://0.0.0.0:{port}", flush=True)
     print(memguard.status_line(0), flush=True)
     memguard.start_monitor(scan_stats)
-    start_draw_scheduler()
-    start_rewards_scheduler()
     start_alerts_rechecker()
     start_replay_checker()
     ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()

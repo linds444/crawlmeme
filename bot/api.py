@@ -1,5 +1,5 @@
 """CrawlScan site API client: POST /api/scan → job, GET /api/result?job= → result,
-GET /api/rewards/status → rewards and burns (/rewards), GET /api/config → whether alerts are enabled,
+GET /api/config → whether alerts are enabled,
 /api/alerts/* → subscriptions (X-Alerts-Secret header).
 The bot never talks to the blockchain itself. Cache (10 minutes) and the scan queue live on the site side."""
 import json, urllib.error, urllib.parse, urllib.request
@@ -68,10 +68,6 @@ class CrawlScan:
     def result(self, job):
         """{"done": False} | {"done": True, "result": {...}} | {"done": True, "error": "..."}."""
         return self._req("/api/result?job=" + urllib.parse.quote(job))
-
-    def rewards_status(self):
-        """Site Rewards & Burns status: {"enabled": False} or the full status (see rewards_service.status_json)."""
-        return self._req("/api/rewards/status")
 
     def config(self):
         """Site {"solana", "alerts", "trade"}."""

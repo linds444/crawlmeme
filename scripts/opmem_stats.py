@@ -1,7 +1,7 @@
 """Operator memory (opmem) summary: number of tokens, operators, wallets, file size and the top 10 wallets
 seen in the most tokens. Read-only.
 
-  python3 scripts/opmem_stats.py [path to memory.db]   (default OPMEM_DB_PATH / next to DRAW_DB_PATH)
+  python3 scripts/opmem_stats.py [path to memory.db]   (default OPMEM_DB_PATH / next to LOCAL_DB_PATH)
 """
 import datetime as dt, os, sqlite3, sys
 

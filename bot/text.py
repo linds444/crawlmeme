@@ -2,11 +2,8 @@
 Address detection uses the same logic as the site (engine.chain_of): 0x + 40 hex → Robinhood,
 base58 of 32 bytes (32–44 chars) → Solana."""
 import html, re
-from datetime import datetime, timezone
 
 WEBSITE = "https://crawlscan.fun"
-OFFICIAL_CA = "0x19dCb63C4d2F29A6f077F094a4f858fC790145e1"
-BUY_URL = "https://www.ponsfamily.com/launchpad/" + OFFICIAL_CA
 
 ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -67,17 +64,12 @@ START = (
     "Send me a token address from Robinhood Chain or Solana. Crawlers go through the top 20 holders onchain "
     "and check who actually bought and who just received tokens, fresh wallets with no history, snipers still "
     "holding, and wallets linked by the same transaction, distributor or funder.\n\n"
-    "In about 15 seconds you get a score from 0 to 100 and a verdict.\n\n"
-    "<b>CrawlScan has its own token, and it rewards its holders.</b>\n\n"
-    "Every 24 hours one holder wins 10% of the creator fees, paid in ETH. Every token you hold is a ticket, "
-    "so the more you hold, the bigger your chance. Every 12 hours the dev burns tokens. "
-    "All verifiable live on the website.\n\n"
-    f"CA: <code>{OFFICIAL_CA}</code>"
+    "In about 15 seconds you get a score from 0 to 100 and a verdict."
 )
 CAPTION_MAX = 1024     # Telegram photo caption limit (visible text, UTF-16)
 START_BUTTONS = {"inline_keyboard": [
     [{"text": "Scan a token", "callback_data": "scan"}, {"text": "Help", "callback_data": "help"}],
-    [{"text": "Website", "url": WEBSITE}, {"text": "Buy $CrawlScan", "url": BUY_URL}],
+    [{"text": "Website", "url": WEBSITE}],
 ]}
 
 
@@ -299,104 +291,6 @@ def verdict(res):
     if gates:
         lines += ["", "<b>Why:</b>"]
         lines += [f"• {e(g[len('soft:'):].strip() if g.startswith('soft:') else g)}" for g in gates]
-    return "\n".join(lines)
-
-
-# ---------- /rewards ----------
-EXPLORER = "https://robinhoodchain.blockscout.com"
-REWARDS_BUTTON = {"inline_keyboard": [[{"text": "Rewards on website", "url": WEBSITE}]]}
-REWARDS_OFF = "🎁 Holder rewards are not running right now. Check the website for news."
-
-
-def _parse_iso(s):
-    try:
-        return datetime.fromisoformat(s).timestamp() if s else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _utc(ts):
-    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
-
-def until(ts, now):
-    """Time until the event: "in 5h 12m", "in 7m", "in <1m"; already passed → "now"."""
-    s = int(ts - now)
-    if s <= 0:
-        return "now"
-    if s < 60:
-        return "in <1m"
-    h, m = s // 3600, s // 60 % 60
-    return f"in {h}h {m}m" if h else f"in {m}m"
-
-
-def tokens(x):
-    """Token amount for display: 1,500,001 · 12.5 · 0.0042."""
-    if x is None:
-        return "—"
-    return f"{x:,.0f}" if x >= 100 else f"{x:,.2f}".rstrip("0").rstrip(".") if x >= 1 else f"{x:.4g}"
-
-
-def eth(x):
-    """ETH amount for display: up to 4 decimals without trailing zeros (0.0523, 2.5); below 0.0001 → "<0.0001"."""
-    if 0 < x < 0.0001:
-        return "<0.0001"
-    return f"{x:.4f}".rstrip("0").rstrip(".")
-
-
-def tx_link(tx, label="tx"):
-    return f'<a href="{EXPLORER}/tx/{e(tx)}">{e(label)}</a>'
-
-
-def _when(label, iso, now):
-    ts = _parse_iso(iso)
-    if ts is None:
-        return None
-    return f"{label}: <b>{datetime.fromtimestamp(ts, timezone.utc).strftime('%H:%M')} UTC</b> · {until(ts, now)}"
-
-
-def rewards(st):
-    """/api/rewards/status → /rewards HTML text. Disabled → REWARDS_OFF."""
-    if not isinstance(st, dict) or not st.get("enabled"):
-        return REWARDS_OFF
-    now = _parse_iso(st.get("now")) or datetime.now(timezone.utc).timestamp()
-    lines = ["🎁 <b>$CrawlScan holder rewards</b>", ""]
-    lines += [x for x in (_when("🎲 Next draw", st.get("next_draw"), now),
-                          _when("🔥 Next burn", st.get("next_burn"), now)) if x]
-
-    d = st.get("last_draw")
-    lines.append("")
-    if not d:
-        lines.append("No draws yet. The first winner is picked at the next draw.")
-    elif not d.get("winner"):
-        lines.append(f"<b>Draw of {e(d.get('day', ''))}</b>: no eligible holders, the prize carries over.")
-    else:
-        chance = d.get("chance")
-        pct = "—" if chance is None else f"{chance * 100:.2f}%" if chance >= 0.0001 else "<0.01%"
-        lines.append(f"<b>Last winner</b> · draw of {e(d.get('day', ''))}")
-        lines.append(f"<code>{e(short(d['winner']))}</code> · chance {pct}")
-        if d.get("payout_tx") and d.get("payout_currency") == "ETH":   # unified format: Paid: <amount> <currency>
-            amt = f"{eth(d['payout_eth'])} ETH · " if d.get("payout_eth") is not None else ""
-            lines.append(f"✅ Paid: {amt}{tx_link(d['payout_tx'])}")
-        elif d.get("payout_tx"):   # token payouts (before the switch to ETH)
-            amt = f"{tokens(d.get('payout_tokens'))} $CrawlScan · " if d.get("payout_tokens") is not None else ""
-            lines.append(f"✅ Paid: {amt}{tx_link(d['payout_tx'])}")
-        else:
-            lines.append("⏳ Payout pending")
-
-    tb, dev = st.get("total_burned"), st.get("burned_by_dev") or {}
-    lines.append("")
-    if tb and tb.get("amount"):
-        pct = f" ({tb['amount'] / tb['minted'] * 100:.2f}% of supply)" if tb.get("minted") else ""
-        lines.append(f"🔥 <b>Burned</b>: {tokens(tb.get('amount_tokens'))} $CrawlScan{pct}")
-    elif dev.get("amount"):
-        lines.append(f"🔥 <b>Burned</b>: {tokens(dev.get('amount_tokens'))} $CrawlScan")
-    else:
-        lines.append("🔥 <b>Burned</b>: nothing yet")
-    lb = st.get("last_burn")
-    if lb:
-        when = f" · {_utc(lb['time'])}" if lb.get("time") else ""
-        lines.append(f"Last burn: {tokens(lb.get('amount_tokens'))} $CrawlScan{when} · {tx_link(lb['tx'])}")
     return "\n".join(lines)
 
 

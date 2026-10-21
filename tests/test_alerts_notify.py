@@ -247,7 +247,7 @@ class TestLiveScans(unittest.TestCase):
             server.JOBS.clear(); server.BY_TOKEN.clear()
         server._notifier.update(obj=None, warned=False)
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = mock.patch.dict(os.environ, {"DRAW_DB_PATH": os.path.join(self.tmp.name, "l.db"),
+        self.env = mock.patch.dict(os.environ, {"LOCAL_DB_PATH": os.path.join(self.tmp.name, "l.db"),
                                                 "ALERTS_ENABLED": "true", "TG_BOT_TOKEN": "123:TESTTOKEN"})
         self.env.__enter__()
         self.fakes = fakes.patched()

@@ -1,4 +1,4 @@
-"""Telegram alerts: SQLite, the same file as the draw (DRAW_DB_PATH, default ./data/draw.db),
+"""Telegram alerts: SQLite, the same file as the feed (LOCAL_DB_PATH, default ./data/crawl.db),
 tables alert_snapshots (one token, one row: last snapshot cur and previous prev, JSON) and
 alert_watches (chat subscriptions: up to WATCH_LIMIT tokens per chat, live for WATCH_DAYS days).
 """
@@ -7,7 +7,6 @@ import json, os, time
 import db
 
 from alerts import ROUND, WATCH_DAYS, WATCH_LIMIT
-from draw_store import DEFAULT_PATH
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS alert_snapshots (
@@ -21,7 +20,7 @@ CREATE INDEX IF NOT EXISTS alert_watches_token ON alert_watches(token);
 
 class AlertsStore:
     def __init__(self, path=None):
-        self.path = path or os.environ.get("DRAW_DB_PATH") or DEFAULT_PATH
+        self.path = path or db.local_path()
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         self._lock = db.lock_for(self.path)   # one lock per file for all stores
         self.db = db.connect(self.path)
