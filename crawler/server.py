@@ -51,7 +51,7 @@ threshold after cache reset — scans up to MAX_CONCURRENT without a queue, abov
 a line with memory, number of active scans and per-minute counters.
 PORT from env, default 8000.
 """
-import hashlib, hmac, json, os, re, threading, time, uuid
+import base64, hashlib, hmac, json, os, re, threading, time, uuid
 from email.utils import formatdate, parsedate_to_datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -164,6 +164,28 @@ def _rate_take(client, now):
     _RATE[key] = hits
 
 
+def serverless():
+    """Serverless mode (Vercel: VERCEL=1, or SERVERLESS=1): no background threads survive a response and instances
+    share no memory, so a scan runs inside POST /api/scan and the job id encodes (chain, token): an instance that
+    never saw the job re-runs the scan instead of answering 404 (a rare duplicate scan, never a dead page)."""
+    return (os.environ.get("SERVERLESS") or os.environ.get("VERCEL") or "").strip() in ("1", "true")
+
+
+def _sjob_id(chain, token):
+    return "s" + base64.urlsafe_b64encode(f"{chain}:{token}".encode()).decode().rstrip("=")
+
+
+def _sjob_target(jid):
+    """(chain, token) from a serverless job id, or None."""
+    if not jid.startswith("s") or len(jid) > 200:
+        return None
+    try:
+        chain, _, token = base64.urlsafe_b64decode(jid[1:] + "=" * (-len(jid[1:]) % 4)).decode().partition(":")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return (chain, token) if chain and token else None
+
+
 def _key(chain, token):
     """BY_TOKEN key: the bare address for Robinhood and Solana (V1 behaviour), chain:address for chains added later
     (the same 0x address can exist on several EVM chains)."""
@@ -272,10 +294,13 @@ def start_scan(token, client=None, chain=None):
         _rate_take(client, now)
         _ACTIVE[0] += 1
         _STATS["started"] += 1
-        jid = uuid.uuid4().hex[:12]
+        jid = _sjob_id(chain, token) if serverless() else uuid.uuid4().hex[:12]
         JOBS[jid] = {"token": token, "chain": chain, "key": key, "events": [], "done": False, "result": None,
                      "error": None, "ts": now}
         BY_TOKEN[key] = jid
+    if serverless():   # the scan must finish inside this request (see serverless())
+        _run(jid, token)
+        return jid
     try:
         threading.Thread(target=_run, args=(jid, token), daemon=True).start()
     except RuntimeError:   # can't start new thread: same as a full queue
@@ -689,7 +714,15 @@ class H(BaseHTTPRequestHandler):
     def _job(self, q):
         jid = (q.get("job") or [""])[0]
         with _lock:
-            return JOBS.get(jid)
+            job = JOBS.get(jid)
+        if job is None and serverless() and (target := _sjob_target(jid)):
+            try:   # another instance ran it: scan again here (same result semantics, cached for CACHE_TTL)
+                start_scan(target[1], scan_client(self.headers, self.client_address[0]), chain=target[0])
+            except (engine.ScanError, Busy, RateLimited):
+                return None
+            with _lock:
+                job = JOBS.get(jid)
+        return job
 
     def _alerts(self, method, path, q):
         if not alerts.enabled():

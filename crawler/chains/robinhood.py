@@ -11,8 +11,8 @@ from crawler.env import load_dotenv
 from crawler.chains import priority
 load_dotenv()
 
-RPC = os.environ.get("CRAWLER_RPC")  # read-only endpoint (Alchemy, QuickNode, public); checked at request time so a
-                                     # deployment without Robinhood Chain can still import the engine
+PUBLIC_RPC = "https://rpc.mainnet.chain.robinhood.com"   # official public endpoint (full log history, 8 RPS)
+RPC = os.environ.get("CRAWLER_RPC") or PUBLIC_RPC   # read-only endpoint (Alchemy, QuickNode); public one by default
 
 CHAIN = "robinhood"
 PACK_WINDOW = 0           # pack window (detect.find_packs): same block

@@ -147,6 +147,38 @@ class TestApi(unittest.TestCase):
         self.assertEqual(server._key("bsc", ADDR), "bsc:" + ADDR)        # same address on two chains: two entries
 
 
+class TestServerless(TestApi):
+    """Vercel mode: no background threads, no shared memory between instances."""
+
+    def setUp(self):
+        super().setUp()
+        self.stack.enter_context(mock.patch.dict(os.environ, {"SERVERLESS": "1"}))
+
+    def test_scan_finishes_inside_the_request(self):
+        code, d, _ = self.request("/api/scan", {"token": fakes.TOKEN})
+        self.assertEqual(code, 200)
+        self.assertEqual(server._sjob_target(d["job"]), ("robinhood", fakes.TOKEN))
+        with server._lock:
+            self.assertTrue(server.JOBS[d["job"]]["done"])            # already done when POST returns
+
+    def test_other_instance_rescans_instead_of_404(self):
+        code, d, _ = self.request("/api/scan", {"token": fakes.TOKEN})
+        with server._lock:                                             # a fresh instance: nothing in memory
+            server.JOBS.clear(); server.BY_TOKEN.clear()
+        code, ev, _ = self.request(f"/api/events?job={d['job']}&after=0")
+        self.assertEqual(code, 200)
+        self.assertTrue(ev["done"])
+        self.assertEqual(ev["events"][-1]["type"], "done")
+        code, r, _ = self.request(f"/api/result?job={d['job']}")
+        self.assertEqual(code, 200)
+        self.assertEqual(r["result"]["token"], fakes.TOKEN)
+
+    def test_garbage_job_id_is_404(self):
+        for jid in ("snot-base64!", "s" + "A" * 300, "xyz"):
+            code, _, _ = self.request(f"/api/events?job={jid}&after=0")
+            self.assertEqual(code, 404)
+
+
 class TestImportWithoutRobinhood(unittest.TestCase):
 
     def test_robinhood_adapter_imports_without_rpc(self):

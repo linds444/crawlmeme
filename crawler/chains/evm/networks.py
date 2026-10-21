@@ -112,9 +112,8 @@ def enabled_chains():
     return on
 
 
-def providers(key, env=os.environ, shared_throttle=None):
-    """Provider list for a chain from the environment (see module doc). shared_throttle: the throttle of an existing
-    adapter on the same first endpoint (Robinhood CRAWLER_RPC), so both stay under one rate limit."""
+def providers(key, env=os.environ):
+    """Provider list for a chain from the environment (see module doc)."""
     net = NETWORKS[key]
     out = []
     own = [u.strip() for u in (env.get(f"{key.upper()}_RPC_URLS") or "").split(",") if u.strip()]
@@ -124,8 +123,7 @@ def providers(key, env=os.environ, shared_throttle=None):
     public = {cfg["url"]: cfg for cfg in PUBLIC.get(key, [])}
     for i, url in enumerate(dict.fromkeys(own)):
         caps = {k: v for k, v in public.get(url, {}).items() if k not in ("name", "url", "rps")}
-        out.append(Provider(f"{key}-own-{i + 1}", url, rps=rps,
-                            throttle=shared_throttle if i == 0 and shared_throttle is not None else None, **caps))
+        out.append(Provider(f"{key}-own-{i + 1}", url, rps=rps, **caps))
     alchemy = (env.get("ALCHEMY_API_KEY") or "").strip()
     if alchemy and net.alchemy_subdomain and not any("alchemy.com" in u for u in own):
         free = (env.get("ALCHEMY_TIER") or "free").strip().lower() == "free"
@@ -142,11 +140,15 @@ _CLIENTS = {}
 
 
 def client(key):
-    """Process-wide EvmClient for a chain (lazily built from the environment)."""
+    """Process-wide EvmClient for a chain (lazily built from the environment). On Robinhood the provider that is the
+    Pons adapter's endpoint (CRAWLER_RPC, or the public node by default) shares that adapter's rate limiter, so the
+    two together stay under the endpoint's limit."""
     if key not in _CLIENTS:
-        shared = None
-        if key == "robinhood" and (os.environ.get("CRAWLER_RPC") or "").strip():
-            from crawler.chains import robinhood   # same endpoint as the Pons adapter: share its rate limiter
-            shared = robinhood._LIMIT
-        _CLIENTS[key] = EvmClient(key, providers(key, shared_throttle=shared))
+        provs = providers(key)
+        if key == "robinhood":
+            from crawler.chains import robinhood
+            for p in provs:
+                if p.url == robinhood.RPC:
+                    p.throttle = robinhood._LIMIT
+        _CLIENTS[key] = EvmClient(key, provs)
     return _CLIENTS[key]
