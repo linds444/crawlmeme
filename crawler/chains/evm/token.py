@@ -337,10 +337,26 @@ class EvmTokenAdapter:
                 "block": int(r["blockNum"], 16), "log_index": li}
 
     # ------------------------------------------------------------------ token history
-    def _logs_cover(self, lo):
+    def _log_providers(self, lo):
+        """Providers that can serve a token's eth_getLogs from block lo (history depth, not denied, enabled)."""
         head = self.client.head()
-        return any(not p.disabled and (p.archive_depth is None or lo >= head - p.archive_depth)
-                   for p in self.client.providers)
+        return [p for p in self.client.providers
+                if not p.disabled and "eth_getLogs" not in p.denied_forever
+                and (p.archive_depth is None or lo >= head - p.archive_depth)]
+
+    def _logs_cover(self, lo):
+        return bool(self._log_providers(lo))
+
+    LOG_WINDOWS_MAX = 40   # more eth_getLogs windows than this for one read: the Transfers API (1,000 rows/call) is cheaper
+
+    def _log_windows(self, lo, hi):
+        """Fewest eth_getLogs requests any provider needs for a token's logs over [lo, hi] (inf: none can).
+        Why: Alchemy's free tier answers logs over 10 blocks at most, so a 100k-block history is 10k requests;
+        the Transfers API reads the same history in a few calls."""
+        best = float("inf")
+        for p in self._log_providers(lo):
+            best = min(best, 1 if p.max_span is None else -(-(hi - lo + 1) // p.max_span))
+        return best
 
     def token_transfers(self, token, from_block, to_block=None, cap=SCAN_MAX_LOGS, until=None):
         """(transfers in chain order, info) for [from_block, head]. Reads only what the history index
@@ -403,7 +419,8 @@ class EvmTokenAdapter:
         """Append transfers of [lo, hi] to out. Returns (source, last block fully read)."""
         if lo > hi:
             return "cache", hi
-        if self._logs_cover(lo):
+        if self._log_windows(lo, hi) <= self.LOG_WINDOWS_MAX or (self._logs_cover(lo)
+                                                                  and not self._has_asset_transfers()):
             n0 = len(out)
             try:
                 done = lo - 1
@@ -513,9 +530,12 @@ class EvmTokenAdapter:
     def wallet_distinct_tokens(self, wallet, before_block, skip_token, window=None, cap=4):
         """min(n, cap) distinct ERC-20 contracts in the wallet's transfers before entry (module doc); None — not read."""
         w, skip = wallet.lower(), skip_token.lower()
-        if self.CHAIN == "robinhood":
-            # same definition as Pons tokens (trades with routers / curves / pools, tested in chains/robinhood.py),
-            # so virgin and short-history mean the same for every Robinhood token
+        if self.CHAIN == "robinhood" and not self._has_asset_transfers():
+            # same definition as Pons tokens (trades with routers / curves / pools, tested in chains/robinhood.py).
+            # With an Alchemy key the Transfers API path below is used instead: the public node throttles the
+            # wide address-less log scans this needs (measured: 20 of 20 wallets cut by the budget), and one
+            # Transfers API call answers it. Its definition is the EVM-generic one (any ERC-20 moved), which can
+            # only count more tokens, i.e. call fewer wallets virgin.
             from crawler.chains import robinhood
             return robinhood.wallet_distinct_tokens(w, before_block, skip, window=window, cap=cap)
         ignore = {skip, self.net.wrapped_native} | set(self.net.stables)
