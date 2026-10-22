@@ -1,13 +1,14 @@
-# Phase 12 launch radar discovery: every 30 minutes, ask the deployed server to find and scan new launches on each
-# chain (GET /api/cron/radar?chain=…). The server does the work; this job only triggers it, one chain per request so
-# each stays inside Vercel's 60 s function limit.
+# Every 30 minutes: Phase 12 launch radar discovery (GET /api/cron/radar?chain=…: find and scan new launches on each
+# chain) and the Phase 13 market tracker (GET /api/cron/track: sample the market of every token scanned in the last
+# 7 days, for Rug Replay, Gem Replay and Proof of Work). The server does the work; this job only triggers it, one
+# request per chain so each stays inside Vercel's 60 s function limit.
 #
 # Repository secrets (Settings → Secrets and variables → Actions):
 #   CRON_SECRET                    the same value as the Vercel environment variable CRON_SECRET (required)
 #   VERCEL_AUTOMATION_BYPASS_SECRET  Vercel → Settings → Deployment Protection → Protection Bypass for Automation
 #                                  (needed while Vercel Authentication protects the deployment)
 # Repository variable (optional): RADAR_URL, default https://crawlmeme.vercel.app
-name: radar discovery
+name: radar discovery and market tracking
 
 on:
   schedule:
@@ -25,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Discover and scan new launches
+      - name: Discover new launches and track markets
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
@@ -43,4 +44,11 @@ jobs:
             head -c 600 out.json; echo
             case "$code" in 200|400) ;; *) failed=1 ;; esac   # 400: chain disabled on the server
           done
+          code=$(curl -sS -o out.json -w '%{http_code}' -m 75 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            ${BYPASS:+-H "x-vercel-protection-bypass: $BYPASS"} \
+            "$RADAR_URL/api/cron/track" || echo 000)
+          echo "market tracker: HTTP $code"
+          head -c 600 out.json; echo
+          [ "$code" = 200 ] || failed=1
           exit $failed

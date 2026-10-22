@@ -2695,6 +2695,7 @@ rep("""      'From CrawlMeme\\'s own memory of earlier scans (other tokens only)
 # ---------------------------------------------------------------------------
 rep('        <a class="cs-wide" href="#how" sc-camel-on-click="{{navHow}}"',
     '        <a class="cs-wide" href="/radar" data-radar="1" data-grip="1" style="color:#8a959c" style-hover="color:#ffffff">radar</a>\n'
+    '        <a class="cs-wide" href="/proof" data-proof="1" data-grip="1" style="color:#8a959c" style-hover="color:#ffffff">proof</a>\n'
     '        <a class="cs-wide" href="#how" sc-camel-on-click="{{navHow}}"')
 
 enc = encode(t)

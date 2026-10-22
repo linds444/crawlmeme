@@ -407,7 +407,9 @@ class TestServer(unittest.TestCase):
                 mock.patch.object(replay, "Checker") as checker:
             self.assertIsNone(server.start_replay_checker())
             checker.assert_not_called()
-            self.assertEqual(self.get("/replay")[0], 404)
+            code, body, _ = self.get("/replay")          # the V1 page is off: /replay lands on Phase 13 Rug Replay
+            self.assertEqual(code, 200)
+            self.assertIn(b"rug replay", body)
             self.assertEqual(self.get("/api/replay")[0], 404)
             self.assertFalse(json.loads(self.get("/api/config")[1])["replay"])
         self.assertFalse(any(t.name == "replay-check" for t in threading.enumerate()))

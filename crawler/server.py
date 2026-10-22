@@ -11,6 +11,10 @@ Read-only: the scan runs in the background, the browser polls for events.
                                             "share_supply", "analysed"}]}  every holder, largest first (limit ≤ 1000)
   GET  /api/chart?token=CA               -> {"token", "chain", "pool", "dex", "timeframe", "candles", "price_usd"[, "stale_at" | "unavailable"]}
                                             GeckoTerminal candles [[ts, o, h, l, c, v]] oldest to newest; not part of the scan
+  GET  /proof                            -> proof.html (Phase 13: Rug Replay, Gem Replay, Proof of Work)
+  GET  /api/proof?view=&window_h=&…       -> proof rows and metrics (proof.py); /gems and /replay redirect to /proof
+  GET  /api/proof/scan?id=                -> one immutable scan record with its fingerprint check and later market
+  GET  /api/cron/track                    -> Phase 13 market tracker (Authorization: Bearer $CRON_SECRET)
   GET  /radar                            -> radar.html (Phase 12 launch radar)
   GET  /api/radar?window=&chain=&…        -> radar tokens with status and reasons (radar.py)
   GET  /api/cron/radar?chain=             -> Phase 12 discovery (Authorization: Bearer $CRON_SECRET; GitHub Actions)
@@ -77,6 +81,7 @@ from crawler.chains.evm import networks as evm_networks
 from crawler import early
 from crawler import outcomes
 from crawler import radar
+from crawler import proof
 from crawler import engine
 from crawler import market
 from crawler import memguard
@@ -875,6 +880,34 @@ class H(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _redirect(self, to):
+        """302 to a same-site path (fixed targets only: never a URL taken from the request)."""
+        self.send_response(302)
+        self.send_header("location", to)
+        self.send_header("content-length", "0")
+        self.end_headers()
+
+    def _proof_scan(self, q):
+        """The supporting data of one proof row: the immutable scan record, a re-check of its fingerprint, every
+        later market snapshot and measured outcome."""
+        try:
+            sid = int((q.get("id") or [""])[0])
+        except ValueError:
+            return self._send(400, {"error": "id must be a scan id"})
+        body = memory_db.call("proof_scan", {"p_scan_id": sid}) if memory_db.enabled() else None
+        if not body:
+            return self._send(404, {"error": "no such scan"})
+        return self._send(200, body)
+
+    def _cron_track(self):
+        """Phase 13 market tracker (GitHub Actions every 30 min, same secret as the other workers)."""
+        if self._cron_refused("market tracker"):
+            return
+        try:
+            return self._send(200, proof.track())
+        except memory_db.MemoryUnavailable as e:
+            return self._send(503, {"error": f"memory unavailable: {e}"})
+
     def _cron_outcomes(self):
         """Phase 11 outcome worker (Vercel Cron sends the secret when CRON_SECRET is set)."""
         if self._cron_refused("outcome worker"):
@@ -1016,9 +1049,20 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"error": str(e)})
             return self._send(200, {"token": ca, **bankr.index_status(ca)} if chain == "robinhood" else
                               {"token": ca, "state": "none", "eta_s": None})
-        if u.path in ("/api/replay", "/replay"):   # Rug Replay: disabled — no page and no API
-            if not replay.enabled():
-                return self._send(404, {"error": "not found"})
+        if u.path == "/proof":
+            return self._send_page(os.path.join(WEB, "proof.html"))
+        if u.path == "/api/proof":
+            return self._send(200, proof.query(q))
+        if u.path == "/api/proof/scan":
+            return self._proof_scan(q)
+        if u.path == "/api/cron/track":
+            return self._cron_track()
+        if u.path == "/gems":
+            return self._redirect("/proof?view=gem")
+        if u.path in ("/api/replay", "/replay"):   # V1 Rug Replay (self-hosted, REPLAY_ENABLED)
+            if not replay.enabled():           # otherwise the page is the Phase 13 proof system's Rug Replay
+                return self._redirect("/proof?view=rug") if u.path == "/replay" else \
+                    self._send(404, {"error": "not found"})
             if u.path == "/replay":
                 return self._send_page(os.path.join(WEB, "replay.html"))
             try:

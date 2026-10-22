@@ -213,7 +213,7 @@ class TestPostgres(StubBase):
         self.assertEqual(sorted(mem["clusters"][0]["wallets"]), ["w1", "w2"])
         self.assertIn("w1", mem["observations"])
         # outcomes: due in the future, nothing to measure yet
-        self.assertEqual(memory_db.outcomes_due(), [])
+        self.assertEqual([o for o in memory_db.outcomes_due(300) if o["chain"] == chain], [])   # other tests' rows
         self.psql(f"update public.outcomes set due_at = now() - interval '1 hour' where chain = '{chain}'")
         due = [o for o in memory_db.outcomes_due(300) if o["chain"] == chain]
         self.assertEqual(sorted((o["token"], o["horizon_h"]) for o in due),
