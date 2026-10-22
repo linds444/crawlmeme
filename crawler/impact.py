@@ -154,15 +154,26 @@ def beyond_quotes(venues, x):
                and x > v["curve"][-1][1] for v in venues if v.get("curve"))
 
 
-def slippage(venues, q, steps=32):
-    """Average execution shortfall vs the spot price for a sale of q: 1 − (1/q)∫₀^q (1 − drop(s)) ds (Simpson).
-    Constant product: exactly 1 − R/(R+q)."""
+def slippage(venues, q, grid=160):
+    """Average execution shortfall vs the spot price for a sale of q: 1 − (1/q)∫₀^q (1 − drop(s)) ds.
+    Trapezoids on a geometric grid (dense where a thin pool drains in the first fraction of the sale) plus every
+    quoted point — exact for the piecewise-linear quote curves. Constant product: 1 − R/(R+q) to within 5e-5."""
     if q <= 0:
         return 0.0
-    h = q / steps
-    f = [1 - (market_drop(venues, i * h) or 0.0) for i in range(steps + 1)]
-    s = f[0] + f[-1] + 4 * sum(f[1:-1:2]) + 2 * sum(f[2:-1:2])
-    return max(0.0, min(1.0, 1 - s * h / 3 / q))
+    live = [v for v in venues if (v.get("reserve") or 0) > 0 or v.get("curve")]
+    pts = {0.0, float(q)}
+    lo = q * 1e-9
+    pts.update(lo * (q / lo) ** (i / grid) for i in range(grid + 1))
+    pts.update(q * i / 64 for i in range(1, 64))   # and an even grid for the smooth part
+    for v in live:
+        for _, x in v.get("curve") or []:   # where the aggregate passes each quoted drop
+            at = venue_absorb(v, x) if len(live) == 1 else market_absorb(live, x)
+            if 0 < at < q:
+                pts.add(at)
+    xs = sorted(pts)
+    ys = [1 - (market_drop(live, x) or 0.0) for x in xs]
+    area = sum((xs[i + 1] - xs[i]) * (ys[i] + ys[i + 1]) / 2 for i in range(len(xs) - 1))
+    return max(0.0, min(1.0, 1 - area / q))
 
 
 # ---------------------------------------------------------------------------

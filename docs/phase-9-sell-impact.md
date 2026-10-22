@@ -1,6 +1,6 @@
 # Phase 9: sell impact and «probably rug»
 
-Status: implemented. 782 offline tests pass (22 new). Checked with live scans on Solana, Base, BNB and Robinhood.
+Status: implemented. 783 offline tests pass (23 new). Checked with live scans on Solana, Base, BNB and Robinhood.
 
 ## What it answers
 

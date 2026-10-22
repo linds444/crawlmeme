@@ -71,8 +71,15 @@ class TestVenues(unittest.TestCase):
     def test_cp_slippage_closed_form(self):
         r, q = 1000.0, 250.0
         v = impact.venue("constant_product", r)
-        self.assertAlmostEqual(impact.slippage([v], q), 1 - r / (r + q), places=6)
+        self.assertAlmostEqual(impact.slippage([v], q), 1 - r / (r + q), places=4)
         self.assertLess(impact.slippage([v], q), impact.market_drop([v], q))   # average fill beats the last fill
+
+    def test_thin_pool_proceeds_are_bounded(self):
+        # a pool that is dry after 0.01% of the sale: proceeds can be no more than what the first slice fetched
+        v = impact.venue("quote_curve", curve=[(100, 0.5), (200, 1.0), (10 ** 6, 1.0)])
+        slip = impact.slippage([v], 10 ** 6)
+        self.assertGreater(slip, 0.9998)
+        self.assertAlmostEqual((1 - slip) * 10 ** 6, 100 * 0.75 + 100 * 0.25, delta=1)   # exact area of the curve
 
     def test_approximate_is_not_exact(self):
         self.assertFalse(impact.venue("approximate", 10)["exact"])
