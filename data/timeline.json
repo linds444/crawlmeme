@@ -27,12 +27,23 @@
     {
       "date": "Oct 22",
       "title": "CrawlMeme",
-      "text": "One scanner for Robinhood, Solana, Base and BNB Chain memecoins.",
+      "text": "One scanner for Robinhood, Solana, Base and BNB Chain memecoins, crawled by peacock spiders.",
+      "url": "https://github.com/linds444/crawlmeme/pull/1"
+    },
+    {
+      "date": "Oct 22",
+      "title": "Every holder",
+      "text": "Every scan lists all of a token's holders, not just the top 20, with the biggest ones examined in depth.",
+      "url": "https://github.com/linds444/crawlmeme/pull/1"
+    },
+    {
+      "date": "Oct 22",
+      "title": "Live event stream",
+      "text": "The crawlers' steps reach the page the moment they happen, from the first second of the scan.",
       "url": "https://github.com/linds444/crawlmeme/pull/1"
     }
   ],
   "next": [
-    "Live event stream",
     "Wallet forensics",
     "Relationship graph",
     "Repeat operators and cabals",
