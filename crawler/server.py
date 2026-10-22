@@ -14,6 +14,8 @@ Read-only: the scan runs in the background, the browser polls for events.
   GET  /proof                            -> proof.html (Phase 13: Rug Replay, Gem Replay, Proof of Work)
   GET  /api/proof?view=&window_h=&…       -> proof rows and metrics (proof.py); /gems and /replay redirect to /proof
   GET  /api/proof/scan?id=                -> one immutable scan record with its fingerprint check and later market
+  GET  /api/history?chain=&token=       -> every scan record of one token, newest first, and its newest market snapshot
+  GET  /i18n.js                          -> localization layer shared by every page (static/i18n.js)
   GET  /api/cron/track                    -> Phase 13 market tracker (Authorization: Bearer $CRON_SECRET)
   GET  /radar                            -> radar.html (Phase 12 launch radar)
   GET  /api/radar?window=&chain=&…        -> radar tokens with status and reasons (radar.py)
@@ -103,6 +105,11 @@ ICONS = {                  # path -> (file in static/, content-type); .ico serve
     "/favicon.ico": ("favicon.png", "image/png"),
 }
 ICON_CACHE = "public, max-age=86400"
+ASSETS = {                 # path -> (file in static/, content-type): page scripts shared by every page
+    "/i18n.js": ("i18n.js", "text/javascript; charset=utf-8"),
+}
+ASSET_CACHE = "public, max-age=300"   # short: a deploy reaches open tabs within minutes
+HISTORY_LIMIT = 20         # scans per token in /api/history
 HTML_CACHE = "no-cache"    # page: the browser stores it but revalidates every time (ETag / Last-Modified → 304)
 _PAGE = {}                 # (path, mtime_ns, size) -> (body, etag, last_modified)
 
@@ -899,6 +906,27 @@ class H(BaseHTTPRequestHandler):
             return self._send(404, {"error": "no such scan"})
         return self._send(200, body)
 
+    def _history(self, q):
+        """Every scan record CrawlMeme holds for one token (newest first) and its newest market snapshot. Address
+        format only, no RPC: an unknown token is an empty history, not an error."""
+        chain = (q.get("chain") or [""])[0].strip().lower()
+        token = (q.get("token") or [""])[0].strip()
+        if chain not in radar_chains():
+            return self._send(400, {"error": "unknown chain"})
+        if chain == "solana":
+            if not engine.sol.is_address(token):
+                return self._send(400, {"error": "not a token address"})
+        elif engine.ADDR_RE.match(token):
+            token = token.lower()
+        else:
+            return self._send(400, {"error": "not a token address"})
+        if not memory_db.enabled():
+            return self._send(200, {"available": False, "reason": "memory is off", "scans": []})
+        body = memory_db.call("token_history", {"p_chain": chain, "p_token": token, "p_limit": HISTORY_LIMIT})
+        if body is None:
+            return self._send(200, {"available": False, "reason": "memory unavailable", "scans": []})
+        return self._send(200, {"available": True, "chain": chain, "token": token, **body})
+
     def _cron_track(self):
         """Phase 13 market tracker (GitHub Actions every 30 min, same secret as the other workers)."""
         if self._cron_refused("market tracker"):
@@ -1055,6 +1083,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, proof.query(q))
         if u.path == "/api/proof/scan":
             return self._proof_scan(q)
+        if u.path == "/api/history":
+            return self._history(q)
         if u.path == "/api/cron/track":
             return self._cron_track()
         if u.path == "/gems":
@@ -1158,11 +1188,11 @@ class H(BaseHTTPRequestHandler):
                 if job["error"]:
                     return self._send(200, {"done": True, "error": job["error"]})
                 return self._send(200, {"done": True, "result": job["result"]})
-        if u.path in ICONS:
-            name, ctype = ICONS[u.path]
+        if u.path in ICONS or u.path in ASSETS:
+            name, ctype = ICONS.get(u.path) or ASSETS[u.path]
             try:
                 with open(os.path.join(WEB, "static", name), "rb") as f:
-                    return self._send(200, f.read(), ctype, ICON_CACHE)
+                    return self._send(200, f.read(), ctype, ICON_CACHE if u.path in ICONS else ASSET_CACHE)
             except FileNotFoundError:
                 return self._send(404, {"error": "not found"})
         if u.path in ("/", "/index.html"):

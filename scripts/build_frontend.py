@@ -2698,6 +2698,222 @@ rep('        <a class="cs-wide" href="#how" sc-camel-on-click="{{navHow}}"',
     '        <a class="cs-wide" href="/proof" data-proof="1" data-grip="1" style="color:#8a959c" style-hover="color:#ffffff">proof</a>\n'
     '        <a class="cs-wide" href="#how" sc-camel-on-click="{{navHow}}"')
 
+# ---------------------------------------------------------------------------
+# Terminal UI (Phase 14):
+#   - localization: /i18n.js (static/i18n.js) on every page, language picker in the header (8 languages)
+#   - «share & export» under the verdict: copy report link (?ca=&chain=), report as JSON / text, share card PNG
+#     (drawn on a canvas, downloaded or copied as an image where the browser allows it)
+#   - «scan history»: every immutable scan record of this token (/api/history), then vs now
+#   - «your recent scans» on the landing: this browser only (localStorage), never sent anywhere
+#   - relationship graph: drag nodes, hover to highlight a node's links, toggles for hub funders and packs
+#   - ?chain= in the URL picks the EVM chain, so a copied report link reopens on the same chain
+# ---------------------------------------------------------------------------
+ICON_LINKS += '\n<script src="/i18n.js"></script>'
+rep('<h1 style="margin:26px 0 0;font-size:clamp(40px,6vw,92px)', '<h1 data-i18n-whole="1" style="margin:26px 0 0;font-size:clamp(40px,6vw,92px)')
+rep('        <a class="cs-wide" href="/proof" data-proof="1" data-grip="1" style="color:#8a959c" style-hover="color:#ffffff">proof</a>\n',
+    '        <a class="cs-wide" href="/proof" data-proof="1" data-grip="1" style="color:#8a959c" style-hover="color:#ffffff">proof</a>\n'
+    '        <span data-lang-slot="1" style="display:inline-flex;align-items:center"></span>\n')
+rep("    const ca=new URLSearchParams(location.search).get('ca');\n",
+    "    const qs=new URLSearchParams(location.search), ca=qs.get('ca'), qc=(qs.get('chain')||'').toLowerCase();\n"
+    "    if(ca&&RH_RE.test(ca.trim())&&CHAIN_NAME[qc]&&qc!=='solana'){EVM_NET=qc; this.picked=qc; this.setState({net:qc});}   // report links\n")
+rep("    if(!fromUrl) history.pushState(null,'','?ca='+ca);",
+    "    if(!fromUrl) history.pushState(null,'','?ca='+ca+(RH_RE.test(ca)&&this.picked&&this.picked!=='solana'?'&chain='+this.picked:''));")
+
+# refs and lifecycle
+rep('bdRef=React.createRef();', 'bdRef=React.createRef(); shRef=React.createRef(); myRef=React.createRef();')
+rep('bdRef:this.bdRef', 'bdRef:this.bdRef, shRef:this.shRef, myRef:this.myRef')
+rep('this.paintImpact(); this.paintBundle();}', 'this.paintImpact(); this.paintBundle(); this.paintShare();}')
+rep('        <div ref="{{bdRef}}" data-bundle="1" style="margin-top:56px"></div>\n\n',
+    '        <div ref="{{shRef}}" data-share="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{bdRef}}" data-bundle="1" style="margin-top:56px"></div>\n\n')
+rep("    this.setState({view:'landing'});\n    window.scrollTo(0,0);\n    this.startLanding();\n    this.loadRecent();",
+    "    this.setState({view:'landing'});\n    window.scrollTo(0,0);\n    this.startLanding();\n    this.loadRecent();\n    this.paintMine();")
+rep('{{r.ago}}</span>\n            </a></sc-for>\n          </div></sc-if>\n',
+    '{{r.ago}}</span>\n            </a></sc-for>\n          </div></sc-if>\n          <div ref="{{myRef}}" data-mine="1"></div>\n')
+
+SHARE_JS = r"""  paintMine(tries=0){   // «your recent scans»: this browser only (localStorage)
+    const el=this.myRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.state.view==='landing') this.paintMine(tries+1);},150); return;}
+    el.innerHTML='';
+    const list=myScans();
+    const since=t=>{const d=Math.max(0,Math.floor((Date.now()-t)/1000)); return d<60?'just now':d<3600?Math.floor(d/60)+'m ago':d<86400?Math.floor(d/3600)+'h ago':Math.floor(d/86400)+'d ago';};
+    if(!list.length) return;
+    const MONO="font-family:'JetBrains Mono',monospace";
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const box=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f;padding:6px 12px;box-sizing:border-box;min-width:0');
+    const head=mk('div','display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 4px 8px;'+MONO+';font-size:12px');
+    const clear=mk('button',MONO+';font-size:12px;color:#5f6b72;background:none;border:0;cursor:pointer;padding:0','clear');
+    clear.addEventListener('click',()=>{saveMyScans([]); this.paintMine();});
+    head.append(mk('span','color:#9fd9ff','your recent scans'),clear);
+    box.append(head);
+    list.slice(0,8).forEach(x=>{
+      const band=(x.band||'').replace(/_/g,' '), href='/?ca='+encodeURIComponent(x.ca)+(x.chain&&x.chain!=='solana'?'&chain='+x.chain:'');
+      const a=mk('a','display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;align-items:center;gap:12px;padding:10px 4px;border-top:1px solid #12181c;'+MONO+';font-size:13px;color:#dfe5e8;text-decoration:none');
+      a.href=href; a.title=x.ca;
+      a.addEventListener('click',e=>{if(e.metaKey||e.ctrlKey||e.shiftKey||e.button) return; e.preventDefault();
+        if(x.chain&&x.chain!=='solana'){EVM_NET=x.chain; this.picked=x.chain;}
+        history.pushState(null,'',href); this.startScan(x.ca,true);});
+      a.append(mk('span','min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#eef1f3',x.ticker?'$'+x.ticker:shortAddr(x.ca)),
+        mk('span','font-size:10.5px;color:#c9d1d6',CHAIN_NAME[x.chain]||x.chain||''),
+        mk('span','font-size:11.5px;letter-spacing:0.04em;color:'+(BANDS[band]||'#8a959c'),(x.score!=null?x.score+' ':'')+band),
+        mk('span','color:#5f6b72;font-size:12px;text-align:right',since(x.ts)));
+      box.append(a);});
+    el.append(box);
+  }
+  paintShare(tries=0){   // share & export, scan history (Phase 14)
+    const m=this.m, el=this.shRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintShare(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{};
+    if(!raw.token||!raw.band) return;
+    const MONO="font-family:'JetBrains Mono',monospace", T=s=>window.CrawlMemeI18n?window.CrawlMemeI18n.t(s):s;
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const chain=raw.chain||chainOf(raw.token), h=raw.header||{}, band=raw.band.replace(/_/g,' ');
+    const tick=h.ticker?'$'+h.ticker:shortAddr(raw.token), col=BANDS[band]||'#8a959c', when=new Date();
+    const link=location.origin+'/?ca='+encodeURIComponent(raw.token)+(chain&&chain!=='solana'?'&chain='+chain:'');
+    const usd=v=>v==null?'—':'$'+(v>=1e9?(v/1e9).toFixed(2)+'B':v>=1e6?(v/1e6).toFixed(2)+'M':v>=1e3?(v/1e3).toFixed(1)+'K':Number(v).toPrecision(3));
+    const pct=v=>v==null?'—':(v*100).toFixed(1)+'%';
+    const rugDrop=raw.rug&&typeof raw.rug.drop==='number'?raw.rug.drop:null;
+    rememberScan({ca:raw.token,chain,ticker:h.ticker||null,band:raw.band,score:raw.score,ts:when.getTime()});
+    const file=(h.ticker||raw.token.slice(0,10)).replace(/[^A-Za-z0-9_-]/g,'')+'-'+chain+'-'+when.toISOString().slice(0,10);
+    const save=(name,blob)=>{const a=document.createElement('a'), u=URL.createObjectURL(blob); a.href=u; a.download=name;
+      document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),4000);};
+    const flash=(b,ok)=>{const was=b.textContent; b.textContent=ok?'copied':'not copied'; b.disabled=true; setTimeout(()=>{b.textContent=was; b.disabled=false;},1400);};
+    const text=()=>{   // plain-text report, in the page language
+      const L=[], add=(k,v)=>L.push(T(k)+': '+v);
+      L.push('CrawlMeme · '+T('scan report'));
+      add('token',(h.name?h.name+' ':'')+tick+' · '+(CHAIN_NAME[chain]||chain));
+      add('address',raw.token);
+      add('report link',link);
+      add('generated',when.toISOString());
+      add('verdict',(raw.score!=null?raw.score+'/100 ':'')+band+(raw.model&&raw.model.id?' · '+raw.model.id:''));
+      if(raw.headline) L.push(T(raw.headline));
+      if(raw.reason) L.push(T(raw.reason));
+      (raw.gates||[]).forEach(g=>L.push('· '+T(g)));
+      add('market cap',usd(h.mcap_usd)); add('liquidity',usd(h.liquidity_usd)); add('price',h.price_usd==null?'—':'$'+h.price_usd);
+      if(raw.holders_total!=null) add('holders',raw.holders_total+(raw.holders_complete?'':'+'));
+      if(raw.metrics&&raw.metrics.top10_share!=null) add('top 10 share',pct(raw.metrics.top10_share));
+      if(rugDrop!=null) L.push(T(`probably rug −${Math.round(rugDrop*100)}%`));
+      if(raw.coverage&&raw.coverage.level) add('coverage',T(raw.coverage.level));
+      L.push('',T('Read-only analysis of public on-chain data. Not financial advice.'));
+      return L.join('\n');};
+    const card=()=>{   // 1200×630 share card
+      const c=document.createElement('canvas'); c.width=1200; c.height=630; const g=c.getContext('2d'), F="'JetBrains Mono',monospace";
+      g.fillStyle='#07090b'; g.fillRect(0,0,1200,630);
+      g.strokeStyle='#141b20'; g.lineWidth=2; g.strokeRect(24,24,1152,582);
+      g.fillStyle='#00c805'; g.font='600 26px '+F; g.fillText('CRAWLMEME',64,92);
+      g.fillStyle='#5f6b72'; g.font='20px '+F; g.fillText(T('memecoin holder scanner ·').replace(/\s*·\s*$/,'')+' · '+(CHAIN_NAME[chain]||chain),64,128);
+      g.fillStyle='#eef1f3'; g.font='600 64px '+F; g.fillText(tick.length>16?tick.slice(0,15)+'…':tick,64,232);
+      g.fillStyle='#5f6b72'; g.font='20px '+F; g.fillText(raw.token.length>44?raw.token.slice(0,20)+'…'+raw.token.slice(-20):raw.token,64,272);
+      g.fillStyle=col; g.font='700 96px '+F; g.fillText(raw.score!=null?String(raw.score):'—',64,400);
+      g.font='600 44px '+F; g.fillText(T(band),64+(raw.score!=null?g.measureText(String(raw.score)).width*96/44+40:120),396);
+      g.fillStyle='#8a959c'; g.font='22px '+F;
+      const line=T(raw.headline||'');
+      let y=456, cur='';
+      line.split(/(\s+)/).forEach(w=>{if(g.measureText(cur+w).width>1060){g.fillText(cur.trim(),64,y); y+=32; cur=w.trimStart();} else cur+=w;});
+      if(cur.trim()&&y<=520) g.fillText(cur.trim(),64,y);
+      if(rugDrop!=null){g.fillStyle='#ff4d4d'; g.font='600 24px '+F; g.fillText('▼ '+T(`probably rug −${Math.round(rugDrop*100)}%`),64,560);}
+      g.fillStyle='#9fd9ff'; g.font='20px '+F; g.textAlign='right';
+      g.fillText(T('mcap')+' '+usd(h.mcap_usd)+'  ·  '+T('liquidity')+' '+usd(h.liquidity_usd),1136,92);
+      g.fillStyle='#5f6b72'; g.fillText(when.toISOString().slice(0,16).replace('T',' ')+' UTC',1136,128);
+      g.fillText(location.host,1136,580);
+      return c;};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','share & export'),
+      mk('span',MONO+';font-size:12px;color:#5f6b72',tick+' · '+(CHAIN_NAME[chain]||chain)));
+    const bar=mk('div','display:flex;flex-wrap:wrap;gap:10px;margin-top:14px');
+    const BTN=MONO+';font-size:12.5px;height:36px;padding:0 14px;border:1px solid #1c252b;border-radius:8px;background:#0b1013;color:#9fd9ff;cursor:pointer';
+    const btn=(label,fn)=>{const b=mk('button',BTN,label); b.type='button'; b.addEventListener('click',()=>fn(b)); bar.append(b); return b;};
+    btn('copy report link',b=>{const p=navigator.clipboard?navigator.clipboard.writeText(link):Promise.reject(); p.then(()=>flash(b,true),()=>flash(b,false));});
+    btn('download report (JSON)',()=>save(file+'.json',new Blob([JSON.stringify({report:'crawlmeme',version:1,generated_at:when.toISOString(),link,result:raw},null,2)],{type:'application/json'})));
+    btn('download report (text)',()=>save(file+'.txt',new Blob([text()],{type:'text/plain;charset=utf-8'})));
+    btn('download share card',()=>card().toBlob(b=>{if(b) save(file+'.png',b);},'image/png'));
+    if(navigator.clipboard&&navigator.clipboard.write&&window.ClipboardItem)   // only where the browser can copy images
+      btn('copy share card',b=>card().toBlob(png=>{if(!png) return flash(b,false);
+        navigator.clipboard.write([new ClipboardItem({'image/png':png})]).then(()=>flash(b,true),()=>flash(b,false));},'image/png'));
+    const hist=mk('div','margin-top:26px');
+    el.append(head,bar,hist);
+    fetch('/api/history?chain='+encodeURIComponent(chain)+'&token='+encodeURIComponent(raw.token),NO_STORE)
+      .then(r=>r.ok?r.json():null).catch(()=>null).then(d=>{
+        if(this.m!==m||!d||!d.available) return;
+        const scans=d.scans||[];
+        if(!scans.length) return;
+        const hh=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px');
+        hh.append(mk('h4','margin:0;font-size:16px;font-weight:500;color:#eef1f3','scan history'),
+          mk('span',MONO+';font-size:12px;color:#5f6b72',scans.length+' '+T(scans.length===1?'record':'records')+' · '+T('immutable, fingerprinted')));
+        const tb=mk('div','display:flex;flex-direction:column;margin-top:10px;border:1px solid #141b20;border-radius:12px;background:#090c0f;overflow:hidden');
+        const COLS='display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) 80px minmax(0,1fr) minmax(0,1.2fr);gap:10px;align-items:center;padding:9px 14px;'+MONO+';font-size:12.5px';
+        const hr=mk('div',COLS+';color:#5f6b72;font-size:11px;text-transform:uppercase;letter-spacing:0.06em');
+        ['scanned','verdict','score','market cap','outcome'].forEach(k=>hr.append(mk('span','',k)));
+        tb.append(hr);
+        scans.forEach(x=>{const b=(x.band||'').replace(/_/g,' '), r=mk('a',COLS+';border-top:1px solid #10161a;color:#dfe5e8;text-decoration:none');
+          r.href='/api/proof/scan?id='+x.scan_id; r.target='_blank'; r.rel='noopener'; r.title=T('supporting data')+' · sha256 '+(x.record_hash||'');
+          const out=(x.outcomes||[]).map(o=>o.horizon_h+'h '+o.label).join(' · ')||'—';
+          r.append(mk('span','color:#8a959c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis',new Date(x.scanned_at).toLocaleString()),
+            mk('span','color:'+(BANDS[b]||'#8a959c'),b),mk('span','color:#eef1f3',x.score==null?'—':String(x.score)),
+            mk('span','color:#c9d1d6',usd(x.mcap_usd)),mk('span','color:#8a959c;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',out));
+          tb.append(r);});
+        hist.append(hh,tb);
+        const first=scans[scans.length-1], now=d.latest;
+        if(now&&first&&first.mcap_usd&&now.mcap_usd&&scans.length>=1){
+          const ch=now.mcap_usd/first.mcap_usd-1;
+          hist.append(mk('p',MONO+';margin:10px 0 0;font-size:12px;color:#8a959c',
+            T('first scan')+' '+usd(first.mcap_usd)+' → '+T('latest market')+' '+usd(now.mcap_usd)+' ('+(ch>=0?'+':'')+(ch*100).toFixed(0)+'%, '+new Date(now.observed_at).toLocaleString()+')'));}
+      });
+  }
+"""
+rep("  paintBundle(tries=0){   // launch bundle (Phase 10)", SHARE_JS + "  paintBundle(tries=0){   // launch bundle (Phase 10)")
+rep("const NO_STORE={cache:'no-store'};",
+    "const NO_STORE={cache:'no-store'};\n"
+    "const MY_KEY='cm_my_scans', MY_MAX=20;   // «your recent scans»: this browser only\n"
+    "function myScans(){try{const v=JSON.parse(localStorage.getItem(MY_KEY)||'[]'); return Array.isArray(v)?v.filter(x=>x&&typeof x.ca==='string'):[];}catch(e){return [];}}\n"
+    "function saveMyScans(v){try{localStorage.setItem(MY_KEY,JSON.stringify(v.slice(0,MY_MAX)));}catch(e){}}\n"
+    "function rememberScan(x){saveMyScans([x,...myScans().filter(y=>!(y.ca===x.ca&&y.chain===x.chain))]);}")
+
+# relationship graph: drag, hover highlight, filters
+rep("      svg.append(ln);});", "      e._ln=ln; svg.append(ln);});")
+rep("      sh.addEventListener('click',()=>{if(ex)", "      sh.addEventListener('click',()=>{if(n._moved){n._moved=false; return;} if(ex)")
+rep("      svg.append(sh);\n", "      n._sh=sh; svg.append(sh);\n")
+rep("tx.textContent=n.rank; svg.append(tx);}", "tx.textContent=n.rank; n._tx=tx; svg.append(tx);}")
+rep("    el.append(svg);\n    const leg=", r"""    el.append(svg);
+    {   // interaction: drag a node (its links follow), hover shows its links, toggles hide hubs and packs
+      const inc={}; E.forEach(e=>{(inc[e.a]=inc[e.a]||[]).push(e); (inc[e.b]=inc[e.b]||[]).push(e);});
+      const seg=e=>{const a=N[idx[e.a]], b=N[idx[e.b]]; e._ln.setAttribute('x1',a.x); e._ln.setAttribute('y1',a.y); e._ln.setAttribute('x2',b.x); e._ln.setAttribute('y2',b.y);};
+      const place=n=>{const s=n._sh;
+        if(n.type==='holder'){s.setAttribute('cx',n.x); s.setAttribute('cy',n.y);}
+        else if(n.type==='funder'){s.setAttribute('x',n.x-n.R); s.setAttribute('y',n.y-n.R); s.setAttribute('transform',`rotate(45 ${n.x} ${n.y})`);}
+        else s.setAttribute('points',`${n.x},${n.y-7} ${n.x+7},${n.y+6} ${n.x-7},${n.y+6}`);
+        if(n._tx){n._tx.setAttribute('x',n.x); n._tx.setAttribute('y',n.y+3.5);}
+        (inc[n.id]||[]).forEach(seg);};
+      const vis={hubs:true,packs:true};
+      const shown=e=>(vis.packs||e.kind!=='pack')&&(vis.hubs||!(hubOf(e.a)||hubOf(e.b)));
+      const paint=focus=>{const near=new Set(focus?[focus.id]:[]);
+        if(focus) (inc[focus.id]||[]).forEach(e=>{if(shown(e)){near.add(e.a); near.add(e.b);}});
+        E.forEach(e=>{const on=shown(e); e._ln.style.display=on?'':'none';
+          e._ln.style.opacity=!focus||(e.a===focus.id||e.b===focus.id)?'':'0.08';});
+        N.forEach(n=>{const on=vis.hubs||!n.hub; n._sh.style.display=on?'':'none'; if(n._tx) n._tx.style.display=on?'':'none';
+          const o=!focus||near.has(n.id)?'':'0.2'; n._sh.style.opacity=o; if(n._tx) n._tx.style.opacity=o;});};
+      const pt=ev=>{const p=svg.createSVGPoint(); p.x=ev.clientX; p.y=ev.clientY; return p.matrixTransform(svg.getScreenCTM().inverse());};
+      let drag=null;
+      N.forEach(n=>{const s=n._sh; s.style.touchAction='none';
+        s.addEventListener('pointerenter',()=>{if(!drag) paint(n);});
+        s.addEventListener('pointerleave',()=>{if(!drag) paint(null);});
+        s.addEventListener('pointerdown',ev=>{const p=pt(ev); drag={n,dx:n.x-p.x,dy:n.y-p.y,x0:ev.clientX,y0:ev.clientY}; s.setPointerCapture(ev.pointerId); paint(n);});
+        s.addEventListener('pointermove',ev=>{if(!drag||drag.n!==n) return; const p=pt(ev);
+          if(Math.abs(ev.clientX-drag.x0)+Math.abs(ev.clientY-drag.y0)>4) n._moved=true;
+          n.x=Math.max(n.R+4,Math.min(W-n.R-4,p.x+drag.dx)); n.y=Math.max(n.R+4,Math.min(H-n.R-4,p.y+drag.dy)); place(n);});
+        const end=ev=>{if(!drag||drag.n!==n) return; drag=null; try{s.releasePointerCapture(ev.pointerId);}catch(e){} if(ev.pointerType!=='mouse') paint(null);};
+        s.addEventListener('pointerup',end); s.addEventListener('pointercancel',end);});
+      const tg=mk('div',MONO+';display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;font-size:11.5px');
+      const toggle=(key,label,any)=>{if(!any) return; const b=mk('button',MONO+';font-size:11.5px;height:28px;padding:0 10px;border-radius:6px;cursor:pointer;background:#0b1013');
+        const set=()=>{b.style.border='1px solid '+(vis[key]?'#1c252b':'#3a454c'); b.style.color=vis[key]?'#9fd9ff':'#5f6b72'; b.setAttribute('aria-pressed',String(vis[key]));};
+        b.type='button'; b.textContent=label; set(); b.addEventListener('click',()=>{vis[key]=!vis[key]; set(); paint(null);}); tg.append(b);};
+      toggle('hubs','hub funders',N.some(n=>n.hub)); toggle('packs','same-block packs',E.some(e=>e.kind==='pack'));
+      if(tg.childNodes.length){tg.prepend(mk('span','color:#5f6b72;align-self:center','show:')); el.append(tg);}
+      el.append(mk('p',MONO+';margin:8px 0 0;font-size:11.5px;color:#5f6b72','drag a node to move it · hover or tap to see its links · '+(ex?'click opens the wallet':'click copies the address')));
+    }
+    const leg=""")
+
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'
 TITLE_NEW = '<title>' + BRAND + '</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')

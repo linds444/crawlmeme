@@ -152,7 +152,8 @@ def metrics(classes):
 
 def link(row):
     tok = row["token"]
-    return {"scan": "/?ca=" + urllib.parse.quote(tok), "record": f"/api/proof/scan?id={row['scan_id']}",
+    chain = "" if row["chain"] == "solana" else "&chain=" + urllib.parse.quote(row["chain"])   # EVM: same address on several chains
+    return {"scan": "/?ca=" + urllib.parse.quote(tok) + chain, "record": f"/api/proof/scan?id={row['scan_id']}",
             "explorer": EXPLORER.get(row["chain"], "") + tok if row["chain"] in EXPLORER else None,
             "market": f"https://www.geckoterminal.com/{GT_NET.get(row['chain'], row['chain'])}/tokens/{tok}"}
 
