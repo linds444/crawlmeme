@@ -1,7 +1,7 @@
 """rh-crawler HTTP server (standard library, ThreadingHTTPServer).
 Read-only: the scan runs in the background, the browser polls for events.
 
-  POST /api/scan {"token": "0x..."}      -> {"job": id}
+  POST /api/scan {"token": "0x...", "chain"?}  -> {"job": id, "chain": resolved chain}  (409 ambiguous_chain: {"chains"})
   GET  /api/events?job=ID&after=N        -> {"events": [...], "done": bool}  (events with i >= N)
   GET  /api/result?job=ID                -> {"done", "result" | "error"}
   GET  /api/chart?token=CA               -> {"token", "chain", "pool", "dex", "timeframe", "candles", "price_usd"[, "stale_at" | "unavailable"]}
@@ -51,7 +51,7 @@ threshold after cache reset — scans up to MAX_CONCURRENT without a queue, abov
 a line with memory, number of active scans and per-minute counters.
 PORT from env, default 8000.
 """
-import base64, hashlib, hmac, json, os, re, threading, time, uuid
+import base64, hashlib, hmac, json, os, re, threading, time, urllib.error, uuid
 from email.utils import formatdate, parsedate_to_datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -215,6 +215,9 @@ def _run_job(job_id, token):
                 job["result"] = res
         except engine.ScanError as e:
             err = str(e)
+        except urllib.error.HTTPError as e:   # provider refused after its retries: say so plainly
+            err = ("the RPC provider is rate-limiting this server right now — try again in a minute"
+                   if e.code == 429 else f"scan failed: RPC answered HTTP {e.code}")
         except Exception as e:  # RPC failure etc.: return the text, the process lives on
             err = f"scan failed: {e}"
         else:
@@ -755,9 +758,12 @@ class H(BaseHTTPRequestHandler):
             body = self._body()
             if body is None:
                 return self._send(413, {"error": "request body too large"})
-            return self._send(200, {"job": start_scan(body.get("token"),
-                                                      scan_client(self.headers, self.client_address[0]),
-                                                      chain=body.get("chain"))})
+            jid = start_scan(body.get("token"), scan_client(self.headers, self.client_address[0]),
+                             chain=body.get("chain"))
+            with _lock:
+                job = JOBS.get(jid)
+            # the chain the address resolved to: the page shows the right chain before the first event arrives
+            return self._send(200, {"job": jid, "chain": job["chain"] if job else None})
         except engine.AmbiguousChain as e:   # same address on several chains: the client must choose one
             return self._send(409, {"error": "ambiguous_chain", "message": str(e), "chains": e.chains})
         except Busy:

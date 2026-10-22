@@ -36,7 +36,7 @@ def patched_chain(mod, token, wallets, entries, history, bal=None):
     p("_post", side_effect=fakes._no_network)
     p("get_launch", side_effect=lambda t: {"block": LAUNCH_SLOT, "curve": curve, "deployer": "deployer",
                                            "tx": "launch"} if t == token else None)
-    p("token_facts", side_effect=lambda t, l: {"supply": SUPPLY, "transfers": [], "excluded": {curve},
+    p("token_facts", side_effect=lambda t, l, deadline=None: {"supply": SUPPLY, "transfers": [], "excluded": {curve},
                                                "market": {curve}, "reserve": SUPPLY - base["circulating"],
                                                "base": base})
     p("classify_entries", side_effect=lambda t, trs, ws: {w: entries[w] for w in ws})

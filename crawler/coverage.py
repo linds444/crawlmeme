@@ -9,7 +9,7 @@ Levels:
   full    — holder balances exact (full transfer history, conservation verified where checked) and every
             examined wallet's history read
   partial — some examined wallets unread (≤ UNREAD_LIMITED of them), or holder count a lower bound (Solana top
-            accounts), or balances not verifiable on this provider
+            accounts), or holder transactions sampled to fit the budget, or balances not verifiable on this provider
   limited — more than UNREAD_LIMITED of the examined wallets unread, or the holder history is incomplete
             (windowed reading) or failed verification
 Cap: limited → band at most OK (score ≤ LIMITED_MAX_SCORE), with a note naming the cause.
@@ -58,6 +58,9 @@ def assess(facts, holders, entries, data, unread_budget, history_info=None, mark
         if method == "top_accounts":
             level = "partial"
             notes.append("holder count is a lower bound (largest accounts only)")
+        if facts.get("sampled"):
+            level = "partial"
+            notes.append("holder transactions sampled to fit the time budget (oldest and newest kept)")
         if verified is None and method == "full_history" and hi:
             level = "partial"
             notes.append("balances not verified against the chain")

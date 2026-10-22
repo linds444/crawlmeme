@@ -368,13 +368,13 @@ class TestServerBusy(unittest.TestCase):
         self.assertIn("result", r)
         with self.full():
             code, d, _ = self.request("/api/scan", {"token": fakes.TOKEN})      # 10-minute cache
-            self.assertEqual((code, d), (200, {"job": jid}))
+            self.assertEqual((code, d["job"]), (200, jid))
             with server._lock:                                                 # a scan of the same token already running
                 server.JOBS["run1"] = {"token": fakes.OTHER, "chain": "robinhood", "events": [], "done": False,
                                        "result": None, "error": None, "ts": time.time()}
                 server.BY_TOKEN[fakes.OTHER] = "run1"
             code, d, _ = self.request("/api/scan", {"token": fakes.OTHER})
-            self.assertEqual((code, d), (200, {"job": "run1"}))
+            self.assertEqual((code, d["job"]), (200, "run1"))
 
     def test_active_counter_returns_to_zero(self):
         self.scan_done()

@@ -39,6 +39,11 @@ class TestAssess(unittest.TestCase):
         self.assertEqual(cov["level"], "partial")
         self.assertTrue(cov["holders"]["holders_total_lower_bound"])
 
+    def test_sampled_holder_transactions_is_partial(self):
+        cov = coverage.assess({"base": None, "sampled": True}, HOLDERS, ENTRIES, data(10), [])
+        self.assertEqual(cov["level"], "partial")
+        self.assertIn("sampled", " ".join(cov["reasons"]))
+
     def test_failed_verification_is_limited(self):
         cov = coverage.assess({"base": None}, HOLDERS, ENTRIES, data(10), [], {"verified": False, "source": "logs"})
         self.assertEqual(cov["level"], "limited")

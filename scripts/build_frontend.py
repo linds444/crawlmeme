@@ -84,7 +84,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(ROOT, "crawler", "web_v1")
 SRC, OUT = os.path.join(WEB, "design.html"), os.path.join(WEB, "index.html")
 SAMPLES = {"robinhood": "0xb4bb188e2d0e82ef9dba8b31ffe41855a2feac0f",   # "try a sample" per chain
-           "solana": "fjKUqPWK9m331Y5TZZNFismtqoP2MGWAMHEkB62pump"}
+           "solana": "fjKUqPWK9m331Y5TZZNFismtqoP2MGWAMHEkB62pump",
+           "base": "0xdf5a6a58758093c704fdfe10c9f7ef13e7ca639f",        # Clanker v4
+           "bsc": "0x16568e054800ab305225036bf45c9d52b7d67777"}         # Flap
 X_URL = "https://x.com/0x_Punisher"
 PONS_URL = "https://www.ponsfamily.com/launchpad/0x19dCb63C4d2F29A6f077F094a4f858fC790145e1"
 GITHUB_URL = "https://github.com/0xPunisher/crawlscan"
@@ -2028,9 +2030,106 @@ rep("  paintEarly(){", r'''  paintTimeline(){   // once per element; the landing
   }
   paintEarly(){''')
 
+# ---------------------------------------------------------------------------
+# CrawlMeme (private fork). Applied last, to the fully patched page:
+#   - name: CRAWLMEME in the title, header logo and footer;
+#   - four chains: Robinhood | Solana | Base | BNB tabs above the input, hero texts name all four;
+#     a 0x address takes the EVM chain of the picked tab (EVM_NET), the server resolves the real chain
+#     (POST /api/scan → "chain"); an address on several chains (409) is scanned on the picked tab's chain
+#     when it is one of them, otherwise the page asks to pick; Basescan / BscScan links;
+#   - no promotion of the upstream project: its token section, hero CA line, PONS link, X account and
+#     Telegram bot are removed (their draw / rewards were deleted in Phase 1); GitHub points to the fork.
+# The Phase 6 Next.js frontend replaces this file; until then these patches are the whole change.
+# ---------------------------------------------------------------------------
+BRAND = "CRAWLMEME"
+FORK_URL = "https://github.com/linds444/crawlmeme"
+CHAIN_COLOR = {"solana": "#9945FF", "base": "#3d7bff", "bsc": "#F0B90B"}
+
+def cut(start, end_marker, tail=""):
+    """Remove t[start-anchor .. end_marker] (both found exactly once after start) plus `tail` right after it."""
+    global t
+    if t.count(start) != 1:
+        sys.exit(f"design.html: cut anchor found {t.count(start)} times: {start[:70]!r}")
+    i = t.find(start)
+    j = t.find(end_marker, i)
+    if j < 0 or not t.startswith(tail, j + len(end_marker)):
+        sys.exit(f"design.html: cut end not found after {start[:70]!r}")
+    t = t[:i] + t[j + len(end_marker) + len(tail):]
+
+rep('<title>CRAWLSCAN</title>', f'<title>{BRAND}</title>')
+rep('>CRAWLSCAN</span>', f'>{BRAND}</span>', count=2)
+
+# upstream project promotion
+cut(f'\n        <a href="{PONS_URL}" target="_blank" rel="noopener" title="CRAWLSCAN on PONS"', '</a>')
+cut(f'\n            <a href="{PONS_URL}" target="_blank" rel="noopener" data-grip="1"', '</a>')
+rep(x_link + "\n" + TELEGRAM_LINK, '', count=2)
+rep(f'<a {ext(GITHUB_URL)} data-grip="1"', f'<a {ext(FORK_URL)} data-grip="1"')
+cut('\n          <span style="display:inline-flex;align-items:center;gap:8px"><span style="color:#00c805">$CrawlScan</span>',
+    '</button></span>')
+cut('      <section id="token"', '</section>', '\n\n')
+rep("let n=2; const next=()=>", "let n=1; const next=()=>")   # «how it works» follows «crawlers at work» (01)
+
+# hero: four chains
+chains_html = ('<span style="white-space:nowrap">Robinhood, <span style="color:#9945FF">Solana</span>, '
+               '<span style="color:#3d7bff">Base</span> and <span style="color:#F0B90B">BNB</span></span>')
+rep('<span style="white-space:nowrap">Robinhood <sc-if value="{{padsOn}}" hint-placeholder-val="{{false}}">'
+    '<span data-launchpads="1">({{padsText}}) </span></sc-if>and <span style="color:#9945FF">Solana</span></span>',
+    chains_html, count=2)
+rep('<span data-grip="1" style="color:#00c805">Robinhood</span><span data-grip="1">and</span>'
+    '<span data-grip="1" style="color:#9945FF">Solana</span><span data-grip="1" style="color:#00c805">memecoins</span>',
+    '<span data-grip="1" style="color:#00c805">Robinhood,</span><span data-grip="1" style="color:#9945FF">Solana,</span>'
+    '<span data-grip="1" style="color:#3d7bff">Base</span><span data-grip="1">and</span>'
+    '<span data-grip="1" style="color:#F0B90B">BNB</span><span data-grip="1" style="color:#00c805">memecoins</span>')
+
+# chain tabs: Base and BNB after Solana (same pill style; variables from netVals)
+def tab(key, label):
+    return (f'<button sc-camel-on-click="{{{{pick{key}}}}}" aria-label="{label}" style="height:30px;padding:0 14px;'
+            f'border-radius:999px;border:1px solid {{{{{key.lower()}Border}}}};background:{{{{{key.lower()}Bg}}}};'
+            f'color:{{{{{key.lower()}Color}}}};font-family:\'JetBrains Mono\',monospace;font-size:12px;cursor:pointer;'
+            f'display:inline-flex;align-items:center;gap:6px" style-hover="color:#ffffff">{label}</button>')
+rep('soon</span></sc-if></button></div>', 'soon</span></sc-if></button>' + tab("Base", "Base") + tab("Bnb", "BNB") + '</div>')
+
+# chain of an address and per-chain texts
+rep("const chainOf=a=>typeof a!=='string'?null:RH_RE.test(a)?'robinhood':SOL_RE.test(a)?'solana':null;",
+    "let EVM_NET='robinhood';   // chain of a 0x address: the picked tab, then the chain the server resolved\n"
+    "const chainOf=a=>typeof a!=='string'?null:RH_RE.test(a)?EVM_NET:SOL_RE.test(a)?'solana':null;")
+rep("const CHAIN_NAME={robinhood:'Robinhood',solana:'Solana'};",
+    "const CHAIN_NAME={robinhood:'Robinhood',solana:'Solana',base:'Base',bsc:'BNB'};")
+rep("const PLACEHOLDER={robinhood:'0x… token contract address',solana:'token mint address (base58)'};",
+    "const PLACEHOLDER={robinhood:'0x… Robinhood token contract address',solana:'token mint address (base58)',"
+    "base:'0x… Base token contract address',bsc:'0x… BNB Chain token contract address'};")
+rep("const EXPLORER={solana:{account:a=>'https://solscan.io/account/'+a,token:a=>'https://solscan.io/token/'+a}};",
+    "const EXPLORER={solana:{account:a=>'https://solscan.io/account/'+a,token:a=>'https://solscan.io/token/'+a},"
+    "base:{account:a=>'https://basescan.org/address/'+a,token:a=>'https://basescan.org/token/'+a},"
+    "bsc:{account:a=>'https://bscscan.com/address/'+a,token:a=>'https://bscscan.com/token/'+a}};")
+rep("a.slice(0,c==='robinhood'?6:4)", "a.slice(0,c==='solana'?4:6)")
+
+rep("""    const rh=st(net==='robinhood'), so=st(net==='solana');
+    const pick=n=>()=>this.setState({net:n,inputError:'',inputNotice:''});""",
+    """    const rh=st(net==='robinhood'), so=st(net==='solana'), ba=st(net==='base'), bn=st(net==='bsc');
+    // a click is an explicit choice: a 0x address is then scanned on that chain
+    const pick=n=>()=>{if(n!=='solana') EVM_NET=n; this.picked=n; this.setState({net:n,inputError:'',inputNotice:''});};""")
+rep("solSoon:this.state.solanaOn===false, pickRh:pick('robinhood'), pickSol:pick('solana'),",
+    "baseColor:ba.c, baseBorder:ba.b, baseBg:ba.g, bnbColor:bn.c, bnbBorder:bn.b, bnbBg:bn.g,\n"
+    "      solSoon:this.state.solanaOn===false, pickRh:pick('robinhood'), pickSol:pick('solana'),\n"
+    "      pickBase:pick('base'), pickBnb:pick('bsc'),")
+
+rep("""        const r=await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:ca})});
+        const d=await r.json().catch(()=>({}));""",
+    """        const post=body=>fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+        const picked=RH_RE.test(ca)&&this.picked&&this.picked!=='solana'?this.picked:null;   // explicit chain tab
+        let r=await post(picked?{token:ca,chain:picked}:{token:ca});
+        let d=await r.json().catch(()=>({}));
+        if(r.status===409&&d.error==='ambiguous_chain'){   // same address on several chains: the tab decides
+          const cs=d.chains||[];
+          if(!cs.includes(EVM_NET)){if(!alive()) return; fail('found on '+cs.map(c=>CHAIN_NAME[c]||c).join(' and ')+' — pick the chain above and crawl again'); step(); return;}
+          r=await post({token:ca,chain:EVM_NET}); d=await r.json().catch(()=>({}));
+        }
+        if(r.ok&&d.chain&&d.chain!=='solana'){EVM_NET=d.chain; if(alive()) this.setState({net:d.chain});}""")
+
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'
-TITLE_NEW = '<title>CRAWLSCAN</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')
+TITLE_NEW = '<title>' + BRAND + '</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')
 prefix = src[:a]
 if prefix.count(TITLE_OLD) != 1:
     sys.exit("design.html: no <title>Bundled Page</title> in the wrapper — build stopped")

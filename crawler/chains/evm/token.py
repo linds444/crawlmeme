@@ -180,6 +180,19 @@ class EvmTokenAdapter:
         return {a: self._code.get(a, False) for a in addrs}
 
     # ------------------------------------------------------------------ launch location
+    WALLET_LOG_SPAN = 10_000   # address-less log span below which a wallet scan over its history takes too many requests
+
+    def _wide_wallet_logs(self):
+        """A provider can scan a wallet's whole history by topic: address-less eth_getLogs, full archive, wide spans.
+        Alchemy's free tier (10-block spans) and Binance's dataseed (no eth_getLogs) cannot: the Transfers API
+        answers the same question in one call where it exists."""
+        def span(p):
+            v = p.max_span_addressless if p.max_span_addressless is not None else p.max_span
+            return float("inf") if v is None else v
+        return any(p.addressless and p.archive_depth is None and not p.disabled
+                   and "eth_getLogs" not in p.denied_forever and span(p) >= self.WALLET_LOG_SPAN
+                   for p in self.client.providers)
+
     def _has_asset_transfers(self):
         return any(p.asset_transfers and not p.disabled for p in self.client.providers)
 
@@ -507,7 +520,7 @@ class EvmTokenAdapter:
             return robinhood.wallet_distinct_tokens(w, before_block, skip, window=window, cap=cap)
         ignore = {skip, self.net.wrapped_native} | set(self.net.stables)
         seen = set()
-        if any(p.addressless and (p.archive_depth is None) for p in self.client.providers):
+        if not self._has_asset_transfers() and self._wide_wallet_logs():
             wt = abi.topic_for(w)
             hi = before_block - 1
             lo = 0 if window is None else max(0, before_block - window)

@@ -760,6 +760,7 @@ class TestF2Frontend(unittest.TestCase):
         self.assertIn("this.state.flapOn&&this.state.view==='scan'", t)         # header: only with the flag
         for m in re.finditer(r"Flap launchpad</span>", t):                      # roadmap card — under sc-if
             self.assertIn('<sc-if value="{{flapOn2}}"', t[max(0, m.start() - 600):m.start()])
-        self.assertEqual(t.count('<sc-if value="{{padsOn}}" hint-placeholder-val="{{false}}"><span data-launchpads="1">'
-                                 '({{padsText}}) </span></sc-if>'), 2)        # "(Pons, Flap)" — only with the flags
+        # CrawlMeme names its four chains in the hero instead of the Robinhood launchpads (build_frontend.py)
+        self.assertEqual(t.count('Robinhood, <span style="color:#9945FF">Solana</span>, '
+                                 '<span style="color:#3d7bff">Base</span> and <span style="color:#F0B90B">BNB</span>'), 2)
         self.assertIn("this.state.flapOn?['Flap']:[]", t)

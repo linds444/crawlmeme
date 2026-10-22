@@ -37,7 +37,15 @@ load_dotenv()
 RPC = os.environ.get("SOLANA_RPC") or (   # explicit endpoint, otherwise Helius from HELIUS_API_KEY (key stays server-side)
     f"https://mainnet.helius-rpc.com/?api-key={os.environ['HELIUS_API_KEY'].strip()}"
     if (os.environ.get("HELIUS_API_KEY") or "").strip() else None)
-RPS = int(os.environ.get("SOLANA_RPS", "8"))  # global cap on HTTP requests/sec
+
+# Helius counts every call inside a batch against its per-second limit (free tier, measured: 10-call batches once a
+# second pass, 20-call batches once a second get 429). Alchemy and most other providers meter per HTTP request or by
+# compute units. SOLANA_BATCH_WEIGHT=item|request overrides the guess made from the endpoint.
+_HELIUS = bool(RPC) and "helius" in RPC
+BATCH_WEIGHT = (os.environ.get("SOLANA_BATCH_WEIGHT") or ("item" if _HELIUS else "request")).strip().lower()
+# global cap on requests/sec (see BATCH_WEIGHT for what one request is). Helius free tier: 10/s nominal, but sustained
+# 8 calls/s already drew 429s in measurement, so 6 is the default there.
+RPS = int(os.environ.get("SOLANA_RPS") or (6 if _HELIUS else 8))
 USE_FUNDING = False
 CHAIN = "solana"
 PACK_WINDOW = 2            # pack window (detect.find_packs): up to 2 slots from the first buyer
@@ -96,7 +104,7 @@ HOLDER_MAX_PAGES = 2       # holder's token account history deeper than this —
 HOLDER_TX_CAP = 30         # token account transactions we read: 10 oldest (entry) + 20 newest (sells)
 HISTORY_TX_CAP = 100       # wallet transactions before entry we read for wallet_distinct_tokens
 HISTORY_CHUNK = 25         # ... in chunks, with early exit
-TX_BATCH = 50              # getTransaction calls per HTTP request
+TX_BATCH = int(os.environ.get("SOLANA_TX_BATCH") or (10 if _HELIUS else 50))   # getTransaction calls per HTTP request
 EARLY_TX_CHUNK = 60        # early buyers: oldest curve transactions per round
 EARLY_TX_MAX = 300         # ... at most this many when searching for the first buyers
 EARLY_OUT_CAP = 20         # transactions of a buyer's token account (newest) for parsing exits
@@ -185,11 +193,12 @@ _BG_LIMIT = priority.Throttle(priority.background_rps())  # own limit for backgr
 _CRIT_LIMIT = priority.Throttle(priority.critical_rps())  # own limit for critical work (CRITICAL_RPS)
 
 
-def _rate_limit():
-    # Spreads HTTP requests over time. Weight is one HTTP request, not a batch item: Alchemy Solana
-    # limits compute units, and a batch of 100 getTransaction goes through without 429; per-item 429s are retried.
+def _rate_limit(n=1):
+    # Spreads requests over time. n — calls in this HTTP request; they count only when the provider meters batch
+    # items (BATCH_WEIGHT=item, Helius). Otherwise one HTTP request is one unit: Alchemy Solana limits compute
+    # units, and a batch of 100 getTransaction goes through without 429; per-item 429s are retried.
     # background yields to live scans and runs no faster than BACKGROUND_RPS
-    priority.rate_limit(_LIMIT, _BG_LIMIT, crit=_CRIT_LIMIT)
+    priority.rate_limit(_LIMIT, _BG_LIMIT, n=n if BATCH_WEIGHT == "item" else 1, crit=_CRIT_LIMIT)
 
 
 REQUESTS = [0]  # counter of HTTP requests to RPC (including retries)
@@ -212,7 +221,7 @@ def _post(payload, _tries=5):
     if not RPC:
         raise RuntimeError("SOLANA_RPC is not set")
     for a in range(_tries):
-        _rate_limit()
+        _rate_limit(len(payload) if isinstance(payload, list) else 1)
         REQUESTS[0] += 1
         req = urllib.request.Request(RPC, data=json.dumps(payload).encode(),
                                      headers={"content-type": "application/json", "User-Agent": "rh-crawler"})
@@ -248,11 +257,20 @@ def rpc_batch(calls, chunk=TX_BATCH, _tries=4):
     Results in the original order; None means the item failed. Items with 429 are retried."""
     out = [None] * len(calls)
     todo = list(range(len(calls)))
+    if BATCH_WEIGHT == "item":           # provider meters batch items: a big batch is a burst it refuses whole
+        chunk = min(chunk, TX_BATCH)
     for a in range(_tries):
         retry = []
         for i in range(0, len(todo), chunk):
             ids = todo[i:i + chunk]
-            resp = _post([{"jsonrpc": "2.0", "id": k, "method": calls[k][0], "params": calls[k][1]} for k in ids])
+            try:
+                resp = _post([{"jsonrpc": "2.0", "id": k, "method": calls[k][0], "params": calls[k][1]}
+                              for k in ids])
+            except urllib.error.HTTPError as e:   # whole batch refused after _post's own retries: retry it here
+                if e.code != 429 or a == _tries - 1:
+                    raise
+                retry += ids
+                continue
             if not isinstance(resp, list):
                 if _is_rate_limited((resp or {}).get("error")):
                     retry += ids
@@ -510,7 +528,21 @@ def is_pool_owner(owner):
     return owner in VAULT_AUTHORITIES or _OWNER_PROG.get(owner) in DEX
 
 
-def token_facts(token, launch):
+FACTS_DEADLINE = True      # engine.scan passes the scan deadline to token_facts
+FACTS_SHARE = 0.5          # share of the time left that holder transactions may take; the rest is for wallet histories
+
+
+def _tx_budget(deadline):
+    """getTransaction calls that fit in FACTS_SHARE of the time left before deadline; None — no deadline, no cap.
+    Why: at the Helius free tier's ~6 calls/s, 20 holders × HOLDER_TX_CAP transactions take ~100 s, past the scan
+    budget and Vercel's 60 s function limit."""
+    if deadline is None:
+        return None
+    rate = RPS if BATCH_WEIGHT == "item" else RPS * TX_BATCH
+    return int(max(0.0, deadline - time.time()) * FACTS_SHARE * rate)
+
+
+def token_facts(token, launch, deadline=None):
     """Token facts for the engine (shared chain contract): {"supply", "transfers", "excluded",
     "market", "reserve", "reserve_ok", "base"}. base — top 20 balances (detect.supply_base shape); transfers — only
     over the top 20 holders' token accounts (sells, distributors, direct transfers, entries).
@@ -520,7 +552,8 @@ def token_facts(token, launch):
     a Raydium/Meteora vault authority). reserve_ok — the reserve is reliably known: always on the curve,
     after migration — only if a pool was found (reserve > 0; 0 means "not found", not "no liquidity")."""
     base = supply_base(token, launch)
-    transfers = get_token_transfers(token, launch["block"])
+    sampled = []
+    transfers = get_token_transfers(token, launch["block"], tx_budget=_tx_budget(deadline), sampled=sampled)
     rows = top_accounts(token)
     if launch.get("complete"):
         reserve = sum(r["amount"] for r in rows if r["owner"] != launch["curve"] and is_pool_owner(r["owner"]))
@@ -530,7 +563,8 @@ def token_facts(token, launch):
     else:
         reserve, ok = sum(r["amount"] for r in rows if r["owner"] == launch["curve"]), True
     return {"supply": base["supply"], "transfers": transfers, "excluded": excluded_addresses(launch["curve"]),
-            "market": market_addresses(launch["curve"]), "reserve": reserve, "reserve_ok": ok, "base": base}
+            "market": market_addresses(launch["curve"]), "reserve": reserve, "reserve_ok": ok, "base": base,
+            "sampled": bool(sampled)}
 
 
 def market_addresses(curve):
@@ -565,25 +599,30 @@ def _account_history(token, accounts):
     return {a: _ACC_HIST.get((token, a)) for a in accounts}
 
 
-def get_token_transfers(token, from_block=0, wallets=None):
+def get_token_transfers(token, from_block=0, wallets=None, tx_budget=None, sampled=None):
     """Token transfers over the token accounts of wallets in wallets (default — top 20 owners),
     starting from slot from_block: [{"frm", "to", "amount", "tx", "block" (slot), "log_index"}],
     in chain order. HOLDER_TX_CAP transactions are read per account: the oldest (entry) and the
-    newest (sells, transfers); history longer than HOLDER_MAX_PAGES pages — the account is skipped."""
+    newest (sells, transfers); history longer than HOLDER_MAX_PAGES pages — the account is skipped.
+    tx_budget — at most this many transactions in total: each account then keeps its 2 oldest (entry) and as many
+    newest as its share allows, and `sampled` (a list) gets True appended."""
     rows = top_accounts(token)
     want = set(wallets) if wallets is not None else {r["owner"] for r in rows if not r["pda"] and r["owner"]}
     accs = [r["account"] for r in rows if r["owner"] in want]
     hist = _account_history(token, accs)
-    pick = {}
+    per_acc = {}
     for a in accs:
         h = hist.get(a)
         if not h or h[1]:
             continue
-        sigs = h[0]
-        chosen = sigs if len(sigs) <= HOLDER_TX_CAP else sigs[:10] + sigs[-(HOLDER_TX_CAP - 10):]
-        for s in chosen:
-            if s["slot"] >= from_block:
-                pick[s["signature"]] = s
+        sigs = [s for s in h[0] if s["slot"] >= from_block]          # oldest → newest
+        per_acc[a] = sigs if len(sigs) <= HOLDER_TX_CAP else sigs[:10] + sigs[-(HOLDER_TX_CAP - 10):]
+    if tx_budget is not None and sum(len(v) for v in per_acc.values()) > tx_budget:
+        share = max(3, tx_budget // max(1, len(per_acc)))
+        per_acc = {a: v if len(v) <= share else v[:2] + v[-(share - 2):] for a, v in per_acc.items()}
+        if sampled is not None:
+            sampled.append(True)
+    pick = {s["signature"]: s for v in per_acc.values() for s in v}
     txs = get_transactions(list(pick))
     out, seen = [], set()
     for sig, s in pick.items():

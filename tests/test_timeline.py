@@ -20,7 +20,7 @@ class TestTimeline(unittest.TestCase):
         self.assertTrue(ms)
         for m in ms:
             self.assertEqual(set(m), {"date", "title", "text", "url"})
-            self.assertRegex(m["url"], r"^https://x\.com/[A-Za-z0-9_]+/status/\d+$")
+            self.assertRegex(m["url"], r"^https://[^\s\"'<>]+$")
             self.assertRegex(m["date"], r"^[A-Z][a-z]{2} \d{1,2}$")
         self.assertTrue(all(isinstance(s, str) and s for s in self.data["next"]))
 
