@@ -1,6 +1,6 @@
 # Phase 10: launch bundle detection and traced bundle supply
 
-Status: implemented. 797 offline tests pass (14 new). Checked with live scans on Robinhood, BNB and Solana.
+Status: implemented. 796 offline tests pass (13 new). Checked with live scans on Robinhood, BNB and Solana.
 
 ## What changed from V1
 
