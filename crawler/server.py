@@ -4,6 +4,8 @@ Read-only: the scan runs in the background, the browser polls for events.
   POST /api/scan {"token": "0x...", "chain"?}  -> {"job": id, "chain": resolved chain}  (409 ambiguous_chain: {"chains"})
   GET  /api/events?job=ID&after=N        -> {"events": [...], "done": bool}  (events with i >= N)
   GET  /api/result?job=ID                -> {"done", "result" | "error"}
+  POST /api/scan with Accept: text/event-stream  -> the scan's events as Server-Sent Events in the same response
+  GET  /api/stream?job=ID[&after=N]      -> Server-Sent Events of a job (Last-Event-ID resumes); docs/events.md
   GET  /api/holders?job=ID&offset=0&limit=100 -> {"total", "complete", "items": [{"rank", "wallet", "balance", "share",
                                             "share_supply", "analysed"}]}  every holder, largest first (limit ≤ 1000)
   GET  /api/chart?token=CA               -> {"token", "chain", "pool", "dex", "timeframe", "candles", "price_usd"[, "stale_at" | "unavailable"]}
@@ -106,6 +108,10 @@ RECENT = {}                # limit -> (ts, /api/recent response)
 _RECENT_GEN = [0]          # feed generation: +1 on every scan write (under _lock)
 BY_TOKEN = {}              # token -> job_id of the latest scan
 _lock = threading.Lock()
+_cv = threading.Condition(_lock)   # notified on every new job event and when a job finishes (event streams wait on it)
+STREAM_HEARTBEAT_S = 10            # comment line on an idle stream: keeps proxies from closing it
+STREAM_MAX_S = 120                 # a stream never outlives this (a scan's budget is 25 s)
+_STREAMS = [0]                     # open event streams (cap: STREAMS_MAX)
 
 
 def _env_int(name, default):
@@ -129,6 +135,7 @@ BUSY = {"error": "busy", "message": "Scanner is busy, try again in a few seconds
 # a request with a valid X-Alerts-Secret (our bot) — no limit
 SCAN_RATE_PER_MIN = _env_int("SCAN_RATE_PER_MIN", 10)
 SCAN_RATE_BOT_PER_MIN = _env_int("SCAN_RATE_BOT_PER_MIN", 120)
+STREAMS_MAX = _env_int("STREAMS_MAX", 64)   # concurrent event streams (each holds a server thread while open)
 RATE_WINDOW = 60           # seconds
 RATE_MAX_CLIENTS = 20_000  # IPs in memory; above that — forget them all (the limit is soft)
 RATE_LIMITED = {"error": "rate_limited", "message": "Too many scans from your address, try again in a minute"}
@@ -207,8 +214,9 @@ def _run_job(job_id, token):
     job = JOBS[job_id]
 
     def emit(e):
-        with _lock:
+        with _cv:
             job["events"].append(e)
+            _cv.notify_all()
 
     with _sem:
         try:
@@ -226,13 +234,14 @@ def _run_job(job_id, token):
             err = f"scan failed: {e}"
         else:
             err = None
-        with _lock:
+        with _cv:
             if err:
                 job["error"] = err
                 job["events"].append({"i": len(job["events"]), "t": int((time.time() - job["ts"]) * 1000),
                                       "type": "error", "spider": None, "wallet": None, "detail": err,
                                       "chain": job["chain"]})
             job["done"] = True
+            _cv.notify_all()
     if not err:
         opmem.record(res)       # queue only (OPMEM_ENABLED), the write happens in its own thread
         record_recent(res)
@@ -256,6 +265,35 @@ def holders_page(job, offset, limit):
              for i, (w, b) in enumerate(rows[offset:offset + limit])]
     return {"done": True, "error": None, "total": len(rows), "complete": res.get("holders_complete"),
             "offset": offset, "items": items}
+
+
+def sse(event=None, data=None, id_=None, comment=None):
+    """One Server-Sent Events frame (docs/events.md). data is JSON on a single line, so it never needs splitting."""
+    lines = []
+    if comment is not None:
+        lines.append(f": {comment}")
+    if id_ is not None:
+        lines.append(f"id: {id_}")
+    if event:
+        lines.append(f"event: {event}")
+    if data is not None:
+        lines.append("data: " + json.dumps(data, separators=(",", ":")))
+    return ("\n".join(lines) + "\n\n").encode()
+
+
+def wants_stream(headers):
+    return "text/event-stream" in (headers.get("accept") or "").lower()
+
+
+def last_event_after(headers, q):
+    """Index of the first event to send: after Last-Event-ID (a reconnecting EventSource) or ?after=N."""
+    try:
+        lei = headers.get("last-event-id")
+        if lei not in (None, ""):
+            return max(0, int(lei) + 1)
+        return max(0, int((q.get("after") or ["0"])[0]))
+    except ValueError:
+        return 0
 
 
 def _reuse(token, now):
@@ -287,12 +325,13 @@ def scan_stats():
     return active, f", last min: {started} started, {busy} busy"
 
 
-def start_scan(token, client=None, chain=None):
+def start_scan(token, client=None, chain=None, background=False):
     """job_id: fresh cache for the token or an already running scan of the same token, otherwise a new one.
     New only if there is room in the queue and memory is below the threshold, otherwise Busy; and if client (key, per-minute limit)
     has not exhausted the new-scan limit, otherwise RateLimited. Cache hits and joining a running scan do not use the limit.
     chain — explicit chain for a 0x address (engine.chain_of); without it an address found on several enabled chains
-    raises engine.AmbiguousChain."""
+    raises engine.AmbiguousChain.
+    background — run the scan in a thread even in serverless mode (the caller streams its events meanwhile)."""
     chain, token = engine.chain_of(token, chain)
     key = _key(chain, token)
     now = time.time()
@@ -324,7 +363,7 @@ def start_scan(token, client=None, chain=None):
         JOBS[jid] = {"token": token, "chain": chain, "key": key, "events": [], "done": False, "result": None,
                      "error": None, "ts": now}
         BY_TOKEN[key] = jid
-    if serverless():   # the scan must finish inside this request (see serverless())
+    if serverless() and not background:   # the scan must finish inside this request (see serverless())
         _run(jid, token)
         return jid
     try:
@@ -737,6 +776,56 @@ class H(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _stream_slot(self):
+        with _lock:
+            if _STREAMS[0] >= STREAMS_MAX:
+                return False
+            _STREAMS[0] += 1
+            return True
+
+    def _stream_release(self):
+        with _lock:
+            _STREAMS[0] -= 1
+
+    def _stream(self, jid, job, after):
+        """Server-Sent Events for one job: `job` first, then every event from index `after` as `scan` (id = event
+        index, so a client resumes with Last-Event-ID), then `result` once the job is done; a comment line every
+        STREAM_HEARTBEAT_S while idle. The connection closes after `result` (HTTP/1.0: the body ends there)."""
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream; charset=utf-8")
+        self.send_header("cache-control", "no-store")
+        self.send_header("x-accel-buffering", "no")   # reverse proxies (nginx): pass frames through unbuffered
+        self.end_headers()
+        if self.command == "HEAD":
+            return
+        until = time.time() + STREAM_MAX_S
+        try:
+            self.wfile.write(b"retry: 2000\n\n" + sse("job", {"job": jid, "chain": job["chain"], "token": job["token"]}))
+            self.wfile.flush()
+            while True:
+                with _cv:
+                    if len(job["events"]) <= after and not job["done"]:
+                        _cv.wait(STREAM_HEARTBEAT_S)
+                    new, done = job["events"][after:], job["done"]
+                    final = None if not done else ({"done": True, "error": job["error"]} if job["error"]
+                                                   else {"done": True, "result": job["result"]})
+                out = b"".join(sse("scan", e, e["i"]) for e in new)
+                after += len(new)
+                if done:   # events and done were read together: nothing can follow the last event
+                    out += sse("result", final)
+                elif not new:
+                    out += sse(comment="ping")
+                self.wfile.write(out)
+                self.wfile.flush()
+                if done:
+                    return
+                if time.time() >= until:
+                    self.wfile.write(sse("timeout", {"job": jid, "after": after}))
+                    self.wfile.flush()
+                    return
+        except (BrokenPipeError, ConnectionResetError):   # client left: the scan goes on (cache, other listeners)
+            return
+
     def _job(self, q):
         jid = (q.get("job") or [""])[0]
         with _lock:
@@ -781,10 +870,19 @@ class H(BaseHTTPRequestHandler):
             body = self._body()
             if body is None:
                 return self._send(413, {"error": "request body too large"})
-            jid = start_scan(body.get("token"), scan_client(self.headers, self.client_address[0]),
-                             chain=body.get("chain"))
-            with _lock:
-                job = JOBS.get(jid)
+            stream = wants_stream(self.headers)
+            if stream and not self._stream_slot():
+                return self._send(503, BUSY, headers={"retry-after": str(RETRY_AFTER)})
+            try:
+                jid = start_scan(body.get("token"), scan_client(self.headers, self.client_address[0]),
+                                 chain=body.get("chain"), background=stream)
+                with _lock:
+                    job = JOBS.get(jid)
+                if stream and job is not None:   # events as they happen, in this same response (docs/events.md)
+                    return self._stream(jid, job, 0)
+            finally:
+                if stream:
+                    self._stream_release()
             # the chain the address resolved to: the page shows the right chain before the first event arrives
             return self._send(200, {"job": jid, "chain": job["chain"] if job else None})
         except engine.AmbiguousChain as e:   # same address on several chains: the client must choose one
@@ -882,6 +980,17 @@ class H(BaseHTTPRequestHandler):
                 after = 0
             with _lock:
                 return self._send(200, {"events": job["events"][after:], "done": job["done"]})
+        if u.path == "/api/stream":    # join a job's event stream (EventSource; resumes after Last-Event-ID)
+            if not self._stream_slot():
+                return self._send(503, BUSY, headers={"retry-after": str(RETRY_AFTER)})
+            try:
+                jid = (q.get("job") or [""])[0]
+                job = self._job(q)
+                if job is None:
+                    return self._send(404, {"error": "unknown job"})
+                return self._stream(jid, job, last_event_after(self.headers, q))
+            finally:
+                self._stream_release()
         if u.path == "/api/holders":   # every holder of a finished scan, a page at a time
             job = self._job(q)
             if job is None:

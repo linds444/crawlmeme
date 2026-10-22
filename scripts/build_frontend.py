@@ -2116,15 +2116,17 @@ rep("solSoon:this.state.solanaOn===false, pickRh:pick('robinhood'), pickSol:pick
 
 rep("""        const r=await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:ca})});
         const d=await r.json().catch(()=>({}));""",
-    """        const post=body=>fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    """        const post=body=>fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json',accept:'text/event-stream, application/json'},body:JSON.stringify(body)});
+        const isStream=r=>r.ok&&(r.headers.get('content-type')||'').startsWith('text/event-stream');
         const picked=RH_RE.test(ca)&&this.picked&&this.picked!=='solana'?this.picked:null;   // explicit chain tab
         let r=await post(picked?{token:ca,chain:picked}:{token:ca});
-        let d=await r.json().catch(()=>({}));
+        let d=isStream(r)?{}:await r.json().catch(()=>({}));
         if(r.status===409&&d.error==='ambiguous_chain'){   // same address on several chains: the tab decides
           const cs=d.chains||[];
           if(!cs.includes(EVM_NET)){if(!alive()) return; fail('found on '+cs.map(c=>CHAIN_NAME[c]||c).join(' and ')+' — pick the chain above and crawl again'); step(); return;}
-          r=await post({token:ca,chain:EVM_NET}); d=await r.json().catch(()=>({}));
+          r=await post({token:ca,chain:EVM_NET}); d=isStream(r)?{}:await r.json().catch(()=>({}));
         }
+        if(isStream(r)){if(!current()){try{r.body.cancel();}catch(e){} return;} feed.streaming=true; step(); readStream(r); return;}
         if(r.ok&&d.chain&&d.chain!=='solana'){EVM_NET=d.chain; if(alive()) this.setState({net:d.chain});}""")
 
 # CrawlScan coin: the draw / rewards sections and their status requests go (their API was deleted in Phase 1;
@@ -2205,6 +2207,41 @@ replace_method('  drawCrawler(ctx,c){', r"""  drawCrawler(ctx,c){   // CrawlMeme
     ctx.restore();
   }
 """)
+
+# Phase 4: live event stream. The scan request asks for Server-Sent Events (docs/events.md) and plays each event as
+# it arrives; the final `result` frame replaces the /api/result request (on Vercel that request may land on another
+# instance and rescan). A stream cut before `result` continues by polling /api/events from the last event id.
+rep("    if(!chainOf(ca)){fail('not a token address'); step(); return;}   // same rule as engine.chain_of, no request",
+    r"""    const readStream=async r=>{   // Server-Sent Events from POST /api/scan
+      const rd=r.body.getReader(), dec=new TextDecoder(); let buf='';
+      const onFrame=f=>{let ev='message', data='';
+        f.split('\n').forEach(line=>{if(line.startsWith('event:')) ev=line.slice(6).trim(); else if(line.startsWith('data:')) data+=line.slice(5).trim(); else if(line.startsWith('id:')) feed.after=(+line.slice(3).trim())+1;});
+        if(!data) return; let d; try{d=JSON.parse(data);}catch(e){return;}
+        if(ev==='job'){feed.job=d.job; this.m.job=d.job; if(d.chain&&d.chain!=='solana'){EVM_NET=d.chain; this.setState({net:d.chain});}}
+        else if(ev==='scan') feed.queue.push(d);
+        else if(ev==='result') feed.result=d;};
+      try{
+        for(;;){
+          const {done,value}=await rd.read(); if(done) break;
+          if(!current()){try{rd.cancel();}catch(e){} return;}
+          buf+=dec.decode(value,{stream:true}).replace(/\r/g,'');
+          let k; while((k=buf.indexOf('\n\n'))>=0){onFrame(buf.slice(0,k)); buf=buf.slice(k+2);}
+        }
+      }catch(err){/* connection cut: handled below */}
+      if(!current()) return;
+      if(feed.result){feed.apiDone=true; return;}
+      feed.streaming=false;
+      if(feed.job) poll(); else fail('server unreachable');   // cut before the end: poll from the last event id
+    };
+    if(!chainOf(ca)){fail('not a token address'); step(); return;}   // same rule as engine.chain_of, no request""")
+rep("""      for(let k=0;k<20&&current();k++){
+        try{
+          const r=await fetch(`/api/result?job=${feed.job}`); const d=await r.json();""",
+    """      for(let k=0;k<20&&current();k++){
+        if(feed.result){const d=feed.result; if(d.error) this.handleEvent({type:'error',detail:d.error}); else this.handleResult(normalizeResult(d.result)); return;}
+        if(feed.streaming&&k<10){await new Promise(res=>setTimeout(res,300)); continue;}   // the result frame is on its way
+        try{
+          const r=await fetch(`/api/result?job=${feed.job}`); const d=await r.json();""")
 
 # ---------------------------------------------------------------------------
 # All holders: under the result, every holder from /api/holders, 100 at a time («show more»), largest first:
