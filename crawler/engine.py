@@ -17,6 +17,8 @@ from crawler.chains import robinhood as ch
 from crawler.chains import solana as sol
 from crawler import detect as d
 from crawler import coverage
+from crawler import forensics
+from crawler.chains.evm import funding as evm_funding
 from crawler import market
 BUDGET = 25.0          # seconds for the whole scan (README)
 DETECT_RESERVE = 1.0   # seconds kept for detect and events after reading wallets
@@ -254,6 +256,20 @@ class _RankGate:
 
 _HIST, _HIST_LOCK = {}, threading.Lock()  # (wallet, before_block) -> coins before entry
 
+FUNDING_WORKERS = 4     # funding-source lookups in flight (one Transfers API / parsed-history call each)
+
+
+def _funding_reader(chain):
+    """(wallet, entry block) → first funder, for wallet forensics; None when the chain has no reader."""
+    if chain == "solana":
+        return sol.first_funder
+    try:
+        client = evm_networks.client(chain)
+    except Exception:
+        return None
+    return lambda w, b: evm_funding.first_funder(client, w, b)
+
+
 def _history(a, wallet, before_block, token):
     key = (wallet, before_block)
     with _HIST_LOCK:
@@ -475,6 +491,28 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     gate = _RankGate(width, left * width / len(order) if width < len(order) else None)
     futs = {ex.submit(priority.run_scoped, sc, gate.run, i, _history, a, w, entries[w]["block"], token): w
             for i, w in enumerate(order)}
+    # wallet forensics, alongside the histories and under the same scope: funding sources, price candles, decimals
+    extras = {}
+
+    def read_extras():
+        try:
+            extras["chart"] = market.fetch_chart(token, network)
+        except Exception:
+            extras["chart"] = {}
+        # Pons / Flap / Bankr tokens are 18 decimals by construction (no request); a token launched straight into a
+        # pool can use any (generic EVM adapter); Solana's comes cached with the supply
+        extras["decimals"] = 6 if chain == "solana" else 18
+        if chain == "solana" or isinstance(a, evm_token.EvmTokenAdapter):
+            try:
+                extras["decimals"] = a.token_decimals(token)
+            except Exception:
+                pass
+    xt = threading.Thread(target=read_extras, daemon=True)
+    xt.start()
+    fund = _funding_reader(chain)
+    fex = ThreadPoolExecutor(max_workers=FUNDING_WORKERS,
+                             thread_name_prefix=f"{priority.BG}-fund" if priority.is_background() else "fund")
+    ffuts = {fex.submit(priority.run_scoped, sc, fund, w, entries[w]["block"]): w for w in order} if fund else {}
 
     def flag(w):
         s = d.wallet_signals({w: data[w]}, ts[launch["block"]], launch["deployer"],
@@ -500,9 +538,19 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
             flag(w)
     except _CFTimeout:
         pass
+    funders = {}
+    try:
+        for f in as_completed(ffuts, timeout=max(0.05, crawl_deadline - time.time())):
+            try:
+                funders[ffuts[f]] = f.result()
+            except (priority.Cancelled, Exception):   # unread: funding unknown for this wallet
+                pass
+    except _CFTimeout:
+        pass
     sc.cancel()
     gate.close()
     ex.shutdown(wait=False, cancel_futures=True)
+    fex.shutdown(wait=False, cancel_futures=True)
     unread = [w for w in hs if w not in done]
     for w in unread:
         flag(w)
@@ -591,6 +639,19 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     if not gt.get("name"):
         meta = a.token_meta(token)
     header = _header(gt, meta, round((time.time() - ts[launch["block"]]) / 3600, 1))
+    # wallet forensics (estimates, never part of the score): trades, P&L at candle prices, hold time, funding
+    xt.join(timeout=max(0.0, min(2.0, deadline + 2.0 - time.time())))
+    chart = extras.get("chart") or {}
+    anchors = list(ts.items())   # launch + entry times the scan already read: no extra request
+    try:
+        fz = forensics.build(transfers, hs, mkt, excluded, base["balances"], share, ratio,
+                             forensics.make_clock(anchors), chart.get("candles"),
+                             chart.get("price_usd") or gt.get("price_usd"),
+                             extras.get("decimals", 6 if chain == "solana" else 18), time.time(), funders, entries)
+    except Exception as e:   # evidence only: a failure here never costs the verdict
+        print(f"forensics: {token}: {type(e).__name__}: {e}", flush=True)
+        fz = None
+
     elapsed = round(time.time() - t0, 1)
     ev("done", reason, score=sc["score"], band=sc["band"], headline=sc["headline"], rug=rug)
 
@@ -606,7 +667,9 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
         "coverage": cov,
         "holders": [{"wallet": a, "share": s, "share_supply": s * ratio, "spider": spider[a],
                      "holder_type": holder_type.get(a, "unknown"),
+                     "forensics": (fz or {}).get("wallets", {}).get(a),
                      "signals": sig[a]} for a, _, s in holders],
+        "forensics": None if fz is None else {k: v for k, v in fz.items() if k != "wallets"},
         "links": links, "packs": packs, "operators": ops,
         "score": sc["score"], "band": sc["band"], "parts": sc["parts"], "gates": sc["gates"],
         "metrics": sc["metrics"], "headline": sc["headline"], "reason": reason, "notes": sc.get("notes", []),

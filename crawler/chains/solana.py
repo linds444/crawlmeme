@@ -27,7 +27,7 @@ How the Solana flow differs from Robinhood (the engine gets everything via token
 - a pack is buys within PACK_WINDOW slots, not within one block.
 Funding is not implemented (USE_FUNDING = False): eth_inflows/outgoing_count — NotImplementedError.
 """
-import base64, hashlib, json, os, random, threading, time, urllib.error, urllib.request
+import base64, hashlib, json, os, random, threading, time, urllib.error, urllib.parse, urllib.request
 from collections import defaultdict
 
 from crawler.env import load_dotenv
@@ -42,6 +42,12 @@ RPC = os.environ.get("SOLANA_RPC") or (   # explicit endpoint, otherwise Helius 
 # second pass, 20-call batches once a second get 429). Alchemy and most other providers meter per HTTP request or by
 # compute units. SOLANA_BATCH_WEIGHT=item|request overrides the guess made from the endpoint.
 _HELIUS = bool(RPC) and "helius" in RPC
+# Helius parsed ("enhanced") transaction history: one call returns 100 decoded transactions of a wallet, where the
+# RPC path needs a getSignaturesForAddress plus ~100 getTransaction. Used for wallet histories and funding (Phase 5).
+HELIUS_KEY = (os.environ.get("HELIUS_API_KEY") or "").strip()
+ENHANCED_URL = "https://api-mainnet.helius-rpc.com/v0/addresses/{addr}/transactions"
+ENHANCED_LIMIT = 100
+ENHANCED_RPS = float(os.environ.get("HELIUS_ENHANCED_RPS") or 5)
 BATCH_WEIGHT = (os.environ.get("SOLANA_BATCH_WEIGHT") or ("item" if _HELIUS else "request")).strip().lower()
 # global cap on requests/sec (see BATCH_WEIGHT for what one request is). Helius free tier: 10/s nominal, but sustained
 # 8 calls/s already drew 429s in measurement, so 6 is the default there.
@@ -470,7 +476,10 @@ def launched_pair(token):
 
 
 def token_supply(token):
-    return int(rpc("getTokenSupply", [token])["value"]["amount"])
+    v = rpc("getTokenSupply", [token])["value"]
+    if "decimals" in v:
+        _DECIMALS[token] = int(v["decimals"])
+    return int(v["amount"])
 
 
 def top_accounts(token):
@@ -756,6 +765,118 @@ def block_timestamps(blocks):
     return {b: _SLOT_TS[b] for b in blocks if b in _SLOT_TS}
 
 
+_ENH_LIMIT = priority.Throttle(ENHANCED_RPS)
+_ENH, _ENH_WAIT, _ENH_LOCK = {}, {}, threading.Lock()
+DEX_SOURCES = {"PUMP_FUN", "PUMP_AMM", "RAYDIUM", "JUPITER", "ORCA", "METEORA", "PHOENIX", "OPENBOOK", "LIFINITY",
+               "MOONSHOT", "BONK", "LAUNCHLAB", "OKX_DEX_ROUTER"}
+
+
+def enhanced_before(wallet, before_sig):
+    """Helius parsed transactions of wallet strictly before before_sig, newest first: (txs, complete) — complete when
+    the page holds the wallet's whole history before that point. None — no Helius key or the call failed.
+    One fetch per (wallet, before_sig) per process: a second caller waits for the first instead of fetching again."""
+    if not HELIUS_KEY or not before_sig:
+        return None
+    key = (wallet, before_sig)
+    with _ENH_LOCK:
+        if key in _ENH:
+            return _ENH[key]
+        ev, mine = _ENH_WAIT.get(key), False
+        if ev is None:
+            ev = _ENH_WAIT[key] = threading.Event()
+            mine = True
+    if not mine:
+        ev.wait(30)
+        with _ENH_LOCK:
+            return _ENH.get(key)
+    res = None
+    try:
+        q = urllib.parse.urlencode({"api-key": HELIUS_KEY, "limit": ENHANCED_LIMIT, "before": before_sig})
+        url = ENHANCED_URL.format(addr=urllib.parse.quote(wallet, safe="")) + "?" + q
+        for a in range(3):
+            priority.rate_limit(_ENH_LIMIT, _BG_LIMIT)
+            REQUESTS[0] += 1
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "crawlmeme"}),
+                                            timeout=20) as r:
+                    txs = json.loads(r.read())
+                if isinstance(txs, list):
+                    res = (txs, len(txs) < ENHANCED_LIMIT)
+                break
+            except urllib.error.HTTPError as e:     # never print the URL: it carries the key
+                if e.code == 429 and a < 2:
+                    RATE_LIMITED[0] += 1
+                    _backoff(a)
+                    continue
+                break
+            except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError):
+                if a < 2:
+                    _backoff(a)
+                    continue
+                break
+    finally:
+        with _ENH_LOCK:
+            if res is not None:
+                if len(_ENH) > 5000:
+                    _ENH.clear()
+                _ENH[key] = res
+            _ENH_WAIT.pop(key, None)
+        ev.set()
+    return res
+
+
+def _enh_trade(tx):
+    """A parsed transaction that is a trade: Helius type SWAP, a swap event, or a known DEX / launchpad source."""
+    return (tx.get("type") == "SWAP" or "swap" in (tx.get("events") or {})
+            or (tx.get("source") in DEX_SOURCES and bool(tx.get("tokenTransfers"))))
+
+
+def _distinct_enhanced(wallet, before, skip_token, cap):
+    """wallet_distinct_tokens from Helius parsed history; NotImplemented when it is unavailable (use the RPC path)."""
+    page = enhanced_before(wallet, before)
+    if page is None:
+        return NotImplemented
+    txs, complete = page
+    mints = set()
+    for tx in txs:
+        if tx.get("transactionError") or not _enh_trade(tx):
+            continue
+        for t in tx.get("tokenTransfers") or []:
+            if wallet in (t.get("fromUserAccount"), t.get("toUserAccount")) and t.get("mint"):
+                mints.add(t["mint"])
+        mints -= STABLES | {skip_token}
+        if len(mints) >= cap:
+            return cap
+    return len(mints) if complete else None     # more history than one page and under cap: unread, as the RPC path
+
+
+def first_funder(wallet, before_block):
+    """First SOL deposit into wallet before its entry, from Helius parsed history:
+    {"funder", "found", "block" (slot), "tx", "amount" (SOL)}; None — unknown (no key, no entry signature, or the
+    wallet's pre-entry history is longer than one page, so its first deposit was not read)."""
+    page = enhanced_before(wallet, _ENTRY_SIG.get((wallet, before_block)))
+    if page is None or not page[1]:
+        return None
+    for tx in reversed(page[0]):                 # oldest first
+        if tx.get("transactionError"):
+            continue
+        for n in tx.get("nativeTransfers") or []:
+            src = n.get("fromUserAccount")
+            if n.get("toUserAccount") == wallet and src and src != wallet and (n.get("amount") or 0) > 0:
+                return {"funder": src, "found": True, "block": tx.get("slot"), "tx": tx.get("signature"),
+                        "amount": n["amount"] / 1e9}
+    return {"funder": None, "found": False, "block": None, "tx": None, "amount": None}
+
+
+_DECIMALS = {}
+
+
+def token_decimals(token):
+    if token not in _DECIMALS:
+        _DECIMALS[token] = int(rpc("getTokenSupply", [token])["value"]["decimals"])
+    return _DECIMALS[token]
+
+
 def wallet_distinct_tokens(wallet, before_block, skip_token, window=None, cap=4):
     """How many distinct mints the wallet traded (a transaction with a DEX program, mint balance changed)
     before entry, not counting skip_token and SOL/WSOL/USDC/USDT. min(n, cap); early exit at cap.
@@ -765,6 +886,9 @@ def wallet_distinct_tokens(wallet, before_block, skip_token, window=None, cap=4)
     before = _ENTRY_SIG.get((wallet, before_block))
     if before is None:  # entry not from classify_entries: we do not know the history boundary
         return None
+    n = _distinct_enhanced(wallet, before, skip_token, cap)
+    if n is not NotImplemented:
+        return n
     sigs, cut = signatures(wallet, before=before, limit=SIG_PAGE)
     ok = [s["signature"] for s in sigs if not s["err"]]
     mints = set()

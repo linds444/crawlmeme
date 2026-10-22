@@ -41,10 +41,15 @@
       "title": "Live event stream",
       "text": "The crawlers' steps reach the page the moment they happen, from the first second of the scan.",
       "url": "https://github.com/linds444/crawlmeme/pull/1"
+    },
+    {
+      "date": "Oct 22",
+      "title": "Wallet forensics",
+      "text": "Every top holder's trades, P&L at market prices, time held, and who funded the wallet — with shared funders called out.",
+      "url": "https://github.com/linds444/crawlmeme/pull/1"
     }
   ],
   "next": [
-    "Wallet forensics",
     "Relationship graph",
     "Repeat operators and cabals",
     "Launch Radar",

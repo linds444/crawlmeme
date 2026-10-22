@@ -2298,6 +2298,67 @@ rep('<div data-early-box="1" style="display:{{earlyDisplay}};margin-top:56px;fle
     '<div ref="{{earlyRef}}" style="display:flex;flex-direction:column;gap:18px"></div></div>\n\n'
     '        <div ref="{{allRef}}" data-all-holders="1" style="margin-top:56px"></div>')
 
+# ---------------------------------------------------------------------------
+# Wallet forensics (Phase 5): under the result, per analysed holder — entry, time held, cost, sold for, holding now,
+# P&L and multiple at candle prices (estimates), and the funding source; shared funders summarised on top.
+# Painted from the result (holders[].forensics, forensics) into its own element, like «all holders».
+# ---------------------------------------------------------------------------
+rep('allRef=React.createRef();', 'allRef=React.createRef(); fzRef=React.createRef();')
+rep('allRef:this.allRef', 'allRef:this.allRef, fzRef:this.fzRef')
+rep('this.bump(); this.loadAll();}', 'this.bump(); this.loadAll(); this.paintForensics();}')
+rep('        <div ref="{{allRef}}" data-all-holders="1" style="margin-top:56px"></div>',
+    '        <div ref="{{fzRef}}" data-forensics="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{allRef}}" data-all-holders="1" style="margin-top:56px"></div>')
+rep("  loadAll(tries=0){", r"""  paintForensics(tries=0){   // wallet forensics of the analysed holders (Phase 5)
+    const m=this.m, el=this.fzRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintForensics(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, fz=raw.forensics, hs=(raw.holders||[]).filter(h=>h.forensics);
+    if(!fz||!hs.length) return;
+    const MONO="font-family:'JetBrains Mono',monospace", ex=EXPLORER[chainOf(m.ca)];
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const short=a=>a?a.slice(0,6)+'…'+a.slice(-4):'—';
+    const usd=v=>{if(v==null) return '—'; const a=Math.abs(v), sg=v<0?'-':'';
+      return sg+'$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=1e3?(a/1e3).toFixed(1)+'k':a.toFixed(a<10?2:0));};
+    const held=h=>h==null?'—':h<1?Math.round(h*60)+'m':h<48?h.toFixed(1)+'h':Math.floor(h/24)+'d '+Math.round(h%24)+'h';
+    const addr=(a,color)=>{const t=ex?mk('a','color:'+color,short(a)):mk('span','color:'+color,short(a)); t.title=a; if(ex){t.href=ex.account(a); t.target='_blank'; t.rel='noopener';} return t;};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','wallet forensics'),
+                mk('span',MONO+';font-size:12px;color:#8a959c',fz.priced?'USD at candle prices · estimates':'no price history: amounts only'));
+    el.append(head);
+    const pct=v=>(v*100).toFixed(1)+'%';
+    (fz.common_funders||[]).forEach(g=>{
+      const n=mk('div',MONO+';margin-top:12px;padding:12px 14px;border:1px solid rgba(255,77,77,0.35);border-radius:10px;background:rgba(255,77,77,0.06);font-size:12.5px;color:#eef1f3;display:flex;flex-wrap:wrap;gap:6px;align-items:center');
+      n.append(mk('span','color:#ff4d4d','common funder'),addr(g.funder,'#ffd0d0'),
+               mk('span','',`funded ${g.wallets.length} of the top ${hs.length} · ${pct(g.share)} of float`+(g.is_holder?' · itself a holder':'')));
+      el.append(n);});
+    const grid='display:grid;grid-template-columns:40px minmax(90px,1fr) 70px 64px 80px 80px 80px 90px 60px minmax(120px,1.2fr);align-items:center;gap:8px;padding:9px 14px;';
+    const box=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f;overflow-x:auto');
+    const tbl=mk('div','min-width:900px');
+    const hdr=mk('div',grid+MONO+';font-size:11px;color:#5f6b72;text-transform:lowercase');
+    ['#','wallet','entry','held','cost','sold for','holding','p&l','x','funded by'].forEach(x=>hdr.append(mk('span','',x)));
+    tbl.append(hdr);
+    const hset=new Set((raw.holders||[]).map(h=>h.wallet));
+    hs.forEach((h,i)=>{const f=h.forensics, r=mk('div',grid+'border-top:1px solid #10161a;'+MONO+';font-size:12.5px;color:#dfe5e8');
+      const pnl=mk('span','color:'+(f.pnl_usd==null?'#8a959c':f.pnl_usd>=0?'#00c805':'#ff4d4d'),f.pnl_usd==null?'—':(f.pnl_usd>=0?'+':'')+usd(f.pnl_usd));
+      const fu=f.funding, fcell=mk('span','display:flex;gap:6px;align-items:center;overflow:hidden');
+      if(!fu) fcell.append(mk('span','color:#5f6b72','unread'));
+      else if(!fu.found) fcell.append(mk('span','color:#8a959c','no direct deposit'));
+      else{fcell.append(addr(fu.funder,'#9fd9ff'));
+        if(hset.has(fu.funder)) fcell.append(mk('span','color:#ffb020;font-size:11px','a holder'));
+        if(fu.shared_with) fcell.append(mk('span','color:#ff4d4d;font-size:11px','+'+fu.shared_with+' same'));}
+      r.append(mk('span','color:#5f6b72','#'+(i+1)),addr(h.wallet,'#dfe5e8'),mk('span','color:#8a959c',f.entry||'—'),
+               mk('span','',held(f.hold_h)),mk('span','',usd(f.cost_usd)),mk('span','',usd(f.proceeds_usd)),
+               mk('span','',f.exited?'exited':usd(f.holding_usd)),pnl,
+               mk('span','color:'+(f.multiple==null?'#8a959c':f.multiple>=1?'#00c805':'#ff4d4d'),f.multiple==null?'—':f.multiple.toFixed(2)+'x'),fcell);
+      tbl.append(r);});
+    box.append(tbl); el.append(box);
+    el.append(mk('p',MONO+';margin:10px 0 0;font-size:11.5px;line-height:1.6;color:#5f6b72',
+      'Trades come from the token\'s transfer history and are priced at the candle of their time; P&L shows only when every buy and sell could be priced. '
+      +'Funded by: the wallet\'s first native-coin deposit before it bought. Evidence only — not part of the score yet.'));
+  }
+  loadAll(tries=0){""")
+
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'
 TITLE_NEW = '<title>' + BRAND + '</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')

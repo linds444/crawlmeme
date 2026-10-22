@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from crawler.chains import robinhood as ch   # noqa: E402
 from crawler import engine, market                # noqa: E402
+from crawler.chains import solana as _sol          # noqa: E402
+_sol.HELIUS_KEY = ""   # offline: Helius parsed history (wallet histories, funding) is never called for real
 
 TOKEN = "0x" + "ab" * 20
 OTHER = "0x" + "cd" * 20              # not Pons V2: get_launch returns None
@@ -88,6 +90,8 @@ def patched(history_fn=history, launch=True):
     p("is_contract", side_effect=lambda addrs: {a: False for a in addrs})
     p("token_meta", return_value={"name": "Synthetic", "symbol": "SYN"})
     stack.enter_context(mock.patch.object(market, "fetch_market", return_value={}))
+    stack.enter_context(mock.patch.object(market, "fetch_chart", return_value={}))      # forensics: no price candles
+    stack.enter_context(mock.patch.object(engine, "_funding_reader", return_value=None))   # forensics: no funding
     stack.enter_context(mock.patch.object(market, "native_usd", return_value=None))   # ETH/USD (Flap on the curve)
     return stack
 

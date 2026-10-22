@@ -132,6 +132,10 @@ class EvmTokenAdapter:
     def token_supply(self, token):
         return abi.u256(self.call(token, "0x18160ddd"))
 
+    def token_decimals(self, token):
+        """decimals() — launchpad tokens are 18, but a token launched straight into a pool can use anything."""
+        return abi.u256(self.call(token, "0x313ce567"))
+
     def token_meta(self, token):
         name, sym = self.batch_calls([(token, "0x06fdde03"), (token, "0x95d89b41")])
         return {"name": abi.string_result(name), "symbol": abi.string_result(sym)}
