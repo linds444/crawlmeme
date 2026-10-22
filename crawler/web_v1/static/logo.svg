@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="28" viewBox="0 0 32 28" fill="none">
+  <g stroke="#ffd8b0" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="12.8,19.4 7.6,13.6 5.6,7.4"/><polyline points="19.2,19.4 24.4,13.6 26.4,7.4"/>
+  </g>
+  <path d="M3.4 18 A12.6 11.4 0 0 1 28.6 18 Z" fill="#ff7a1a"/>
+  <path d="M4.6 18 A11.4 10.2 0 0 1 27.4 18 Z" fill="#19d3ff"/>
+  <path d="M6.2 18 A9.8 8.8 0 0 1 25.8 18 Z" fill="#ff7a1a"/>
+  <path d="M7.6 18 A8.4 7.5 0 0 1 24.4 18 Z" fill="#1fa7ff"/>
+  <path d="M9.4 18 A6.6 5.9 0 0 1 22.6 18 Z" fill="#2b3bff"/>
+  <path d="M11 18 A5 4.4 0 0 1 21 18 Z" fill="#ff7a1a"/>
+  <path d="M12.3 18 A3.7 3.2 0 0 1 19.7 18 Z" fill="#2b3bff"/>
+  <path d="M15.1 18 L14.4 6.8 L17.6 6.8 L16.9 18 Z" fill="#ff3355"/>
+  <path d="M3.4 18 A12.6 11.4 0 0 1 28.6 18" stroke="#07090b" stroke-width="0.5"/>
+  <g stroke="#ffd8b0" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="13.6,21.6 9.8,23.8 8.6,26.8"/><polyline points="18.4,21.6 22.2,23.8 23.4,26.8"/>
+    <polyline points="12.8,20.6 8,20.8 5.6,23.4"/><polyline points="19.2,20.6 24,20.8 26.4,23.4"/>
+    <polyline points="14.3,22.8 12.6,25.8 12.3,27.7"/><polyline points="17.7,22.8 19.4,25.8 19.7,27.7"/>
+  </g>
+  <ellipse cx="16" cy="21" rx="4.1" ry="3.2" fill="#100c0a" stroke="#00c805" stroke-width="0.65"/>
+  <circle cx="14.45" cy="20.7" r="1.4" fill="#000" stroke="#00c805" stroke-width="0.5"/>
+  <circle cx="17.55" cy="20.7" r="1.4" fill="#000" stroke="#00c805" stroke-width="0.5"/>
+  <circle cx="14.05" cy="20.25" r="0.45" fill="#fff"/><circle cx="17.15" cy="20.25" r="0.45" fill="#fff"/>
+  <circle cx="5.6" cy="7.4" r="1.15" fill="#fff"/><circle cx="26.4" cy="7.4" r="1.15" fill="#fff"/>
+</svg>

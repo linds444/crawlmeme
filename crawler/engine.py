@@ -307,12 +307,14 @@ def _reason(sc, base, n=d.TOP_N):
             "concentration": f"top {n} hold {m['concentration'] * 100:.1f}% of float"}[k]
 
 
-def scan(token, emit=lambda e: None, chain=None):
+def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     """Full token scan. emit(event) -- events in README format. Returns result (dict).
     ScanError -- user-facing error (address, not Pons V2 / pump.fun, Solana disabled); other exceptions -- failure.
     The chain adapter returns token facts in a common shape (token_facts): transfers, supply,
     excluded addresses, market, liquidity token reserve (reserve) and, if the chain knows
-    balances directly (Solana), base."""
+    balances directly (Solana), base.
+    holders_out — a list to receive every holder [(wallet, balance)] by balance, largest first (the result itself
+    carries only the analysed top: a token can have 100,000 holders)."""
     t0 = time.time()
     chain, token = chain_of(token, chain)
     a = CHAINS.get(chain) or evm_networks.client(chain)   # BNB / Base: the adapter is picked per launchpad below
@@ -429,6 +431,8 @@ def scan(token, emit=lambda e: None, chain=None):
     base = facts["base"] or d.supply_base(transfers, supply, excluded)
     holders = d.top_holders(base, scan_depth())
     hs = [w for w, _, _ in holders]
+    if holders_out is not None:
+        holders_out.extend(sorted(base["balances"].items(), key=lambda x: (-x[1], x[0])))
     ratio = base["circulating"] / supply if supply else 0.0
 
     if est := late_established():
@@ -598,6 +602,7 @@ def scan(token, emit=lambda e: None, chain=None):
         "token": token, "chain": chain, "header": header,
         "launch": launch | {"ts": ts[launch["block"]]},
         "supply": supply, "circulating": base["circulating"], "holders_total": base["holders_total"],
+        "holders_complete": cov["holders"]["method"] in ("full_history", "all_accounts"),
         "coverage": cov,
         "holders": [{"wallet": a, "share": s, "share_supply": s * ratio, "spider": spider[a],
                      "holder_type": holder_type.get(a, "unknown"),

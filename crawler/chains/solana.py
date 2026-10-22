@@ -504,15 +504,58 @@ def top_accounts(token):
     return rows
 
 
-def supply_base(token, launch):
-    """Same shape as detect.supply_base: {"supply", "circulating", "holders_total", "balances"}.
-    circulating = supply minus everything held by excluded addresses (curve, pools, burn, PDA) in the top 20;
-    balances — wallet owners in the top 20 (several accounts of one owner are summed).
-    holders_total — a lower bound: wallets with a non-zero balance in the top 20."""
+HOLDERS_MAX = int(os.environ.get("HOLDERS_MAX") or 100_000)   # token accounts read for the full holder list
+DAS_PAGE = 1000                                                 # getTokenAccounts page size (Helius maximum)
+HOLDERS_SHARE = 0.15                                            # share of the time left the holder list may take
+
+
+def all_accounts(token, deadline=None):
+    """Every token account with a balance, from Helius DAS getTokenAccounts: ({owner: amount}, complete) or None
+    when the endpoint is not Helius (DAS is a Helius API; standard RPC has no paginated holder list, and
+    getProgramAccounts over the token program is refused by public and free endpoints).
+    complete — False when HOLDERS_MAX or the time share ran out first (the list is then the first pages only)."""
+    if not _HELIUS:
+        return None
+    stop = None if deadline is None else time.time() + max(0.0, deadline - time.time()) * HOLDERS_SHARE
+    owners, page = defaultdict(int), 1
+    while True:
+        res = rpc("getTokenAccounts", {"mint": token, "limit": DAS_PAGE, "page": page,
+                                       "options": {"showZeroBalance": False}})
+        accs = res.get("token_accounts") or []
+        for a in accs:
+            if a.get("owner") and int(a.get("amount") or 0) > 0:
+                owners[a["owner"]] += int(a["amount"])
+        if len(accs) < DAS_PAGE:
+            return dict(owners), True
+        if page * DAS_PAGE >= HOLDERS_MAX or (stop is not None and time.time() >= stop):
+            return dict(owners), False
+        page += 1
+
+
+def supply_base(token, launch, deadline=None):
+    """Same shape as detect.supply_base: {"supply", "circulating", "holders_total", "balances", "complete"}.
+    With Helius: every holder (all_accounts). Infrastructure is what the top 20 identify — the curve, pools, burn,
+    PDAs and known infra (they hold the large balances); its whole balance is left out of circulating.
+    Without Helius, or if DAS fails: the top 20 only, holders_total a lower bound, complete False.
+    Several accounts of one owner are summed."""
     supply = token_supply(token)
     _SUPPLY[token] = (time.time(), supply)
     rows = top_accounts(token)
     excluded = excluded_addresses(launch["curve"])
+    infra_owners = {r["owner"] for r in rows if r["owner"] and (r["owner"] in excluded or r["account"] in excluded
+                                                                 or r["pda"] or r["owner"] in INFRA)}
+    try:
+        full = all_accounts(token, deadline)
+    except (RuntimeError, urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        print(f"solana: holder list unavailable for {token}: {type(e).__name__}", flush=True)
+        full = None
+    if full is not None:
+        owners, complete = full
+        infra = sum(v for o, v in owners.items() if o in infra_owners or o in excluded)
+        infra += sum(r["amount"] for r in rows if r["owner"] is None)
+        bal = {o: v for o, v in owners.items() if o not in infra_owners and o not in excluded}
+        return {"supply": supply, "circulating": supply - infra, "holders_total": len(bal), "balances": bal,
+                "complete": complete}
     bal = defaultdict(int)
     infra = 0
     for r in rows:
@@ -520,7 +563,8 @@ def supply_base(token, launch):
             infra += r["amount"]
         elif r["amount"] > 0:
             bal[r["owner"]] += r["amount"]
-    return {"supply": supply, "circulating": supply - infra, "holders_total": len(bal), "balances": dict(bal)}
+    return {"supply": supply, "circulating": supply - infra, "holders_total": len(bal), "balances": dict(bal),
+            "complete": False}
 
 
 def is_pool_owner(owner):
@@ -551,7 +595,7 @@ def token_facts(token, launch, deadline=None):
     balance of the pools: top 20 accounts whose owner is a DEX pool (is_pool_owner: a DEX program PDA or
     a Raydium/Meteora vault authority). reserve_ok — the reserve is reliably known: always on the curve,
     after migration — only if a pool was found (reserve > 0; 0 means "not found", not "no liquidity")."""
-    base = supply_base(token, launch)
+    base = supply_base(token, launch, deadline)
     sampled = []
     transfers = get_token_transfers(token, launch["block"], tx_budget=_tx_budget(deadline), sampled=sampled)
     rows = top_accounts(token)

@@ -4,6 +4,8 @@ Read-only: the scan runs in the background, the browser polls for events.
   POST /api/scan {"token": "0x...", "chain"?}  -> {"job": id, "chain": resolved chain}  (409 ambiguous_chain: {"chains"})
   GET  /api/events?job=ID&after=N        -> {"events": [...], "done": bool}  (events with i >= N)
   GET  /api/result?job=ID                -> {"done", "result" | "error"}
+  GET  /api/holders?job=ID&offset=0&limit=100 -> {"total", "complete", "items": [{"rank", "wallet", "balance", "share",
+                                            "share_supply", "analysed"}]}  every holder, largest first (limit ≤ 1000)
   GET  /api/chart?token=CA               -> {"token", "chain", "pool", "dex", "timeframe", "candles", "price_usd"[, "stale_at" | "unavailable"]}
                                             GeckoTerminal candles [[ts, o, h, l, c, v]] oldest to newest; not part of the scan
   GET  /api/early?token=CA               -> {"token", "chain", "available", "buyers": [...], "summary": {...}[, "stale_at"]}
@@ -210,9 +212,11 @@ def _run_job(job_id, token):
 
     with _sem:
         try:
-            res = engine.scan(token, emit, chain=job["chain"])
+            holders = []
+            res = engine.scan(token, emit, chain=job["chain"], holders_out=holders)
             with _lock:
                 job["result"] = res
+                job["holders_all"] = holders
         except engine.ScanError as e:
             err = str(e)
         except urllib.error.HTTPError as e:   # provider refused after its retries: say so plainly
@@ -233,6 +237,25 @@ def _run_job(job_id, token):
         opmem.record(res)       # queue only (OPMEM_ENABLED), the write happens in its own thread
         record_recent(res)
         record_snapshot(res)
+
+
+HOLDERS_PAGE, HOLDERS_PAGE_MAX = 100, 1000   # /api/holders page size: default and maximum
+
+
+def holders_page(job, offset, limit):
+    """/api/holders body (under _lock): every holder by balance, largest first. balance is a decimal string of raw
+    token units (it can exceed a JS number's exact range); share — of circulating supply, share_supply — of total
+    supply; analysed — in the top the scan examined in depth. Not done or failed: no items."""
+    res, rows = job["result"], job.get("holders_all")
+    if not job["done"] or not res or rows is None:
+        return {"done": job["done"], "error": job["error"], "total": None, "complete": None, "items": []}
+    circ, supply = res.get("circulating") or 0, res.get("supply") or 0
+    top = {h["wallet"] for h in res.get("holders") or []}
+    items = [{"rank": offset + i + 1, "wallet": w, "balance": str(b), "share": b / circ if circ else None,
+              "share_supply": b / supply if supply else None, "analysed": w in top}
+             for i, (w, b) in enumerate(rows[offset:offset + limit])]
+    return {"done": True, "error": None, "total": len(rows), "complete": res.get("holders_complete"),
+            "offset": offset, "items": items}
 
 
 def _reuse(token, now):
@@ -859,6 +882,17 @@ class H(BaseHTTPRequestHandler):
                 after = 0
             with _lock:
                 return self._send(200, {"events": job["events"][after:], "done": job["done"]})
+        if u.path == "/api/holders":   # every holder of a finished scan, a page at a time
+            job = self._job(q)
+            if job is None:
+                return self._send(404, {"error": "unknown job"})
+            try:
+                offset = max(0, int((q.get("offset") or ["0"])[0]))
+                limit = min(HOLDERS_PAGE_MAX, max(1, int((q.get("limit") or [str(HOLDERS_PAGE)])[0])))
+            except ValueError:
+                return self._send(400, {"error": "offset and limit must be integers"})
+            with _lock:
+                return self._send(200, holders_page(job, offset, limit))
         if u.path == "/api/result":
             job = self._job(q)
             if job is None:

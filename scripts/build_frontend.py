@@ -2127,6 +2127,140 @@ rep("""        const r=await fetch('/api/scan',{method:'POST',headers:{'content-
         }
         if(r.ok&&d.chain&&d.chain!=='solana'){EVM_NET=d.chain; if(alive()) this.setState({net:d.chain});}""")
 
+# CrawlScan coin: the draw / rewards sections and their status requests go (their API was deleted in Phase 1;
+# the page asked for it on every load and got 404s)
+rep("    this.loadDraw();\n    this.loadRewards();\n", "")
+cut('      <sc-if value="{{rwOn}}" hint-placeholder-val="{{false}}"><section id="rewards"', '</section></sc-if>', '\n\n')
+cut('      <sc-if value="{{drawOn}}" hint-placeholder-val="{{false}}"><section id="draw"', '</section></sc-if>', '\n\n')
+rep("+' $CrawlScan'", "+' tokens'", count=2)
+rep('const ca=text||"0x19dCb63C4d2F29A6f077F094a4f858fC790145e1";', 'const ca=text||"";')   # no project CA to copy
+
+# ---------------------------------------------------------------------------
+# CrawlMeme brand: a peacock spider (Maratus) — raised white-tipped display legs, banded fan, big front eyes.
+# The header mark is crawler/web_v1/static/logo.svg inlined (viewBox → sc-camel-view-box, as the design's SVGs);
+# favicon.svg is the same file. The crawlers on the canvas are drawn as peacock spiders too, one palette per variant.
+# ---------------------------------------------------------------------------
+LOGO_SVG = open(os.path.join(WEB, "static", "logo.svg"), encoding="utf-8").read()
+logo_inline = (LOGO_SVG.replace(' xmlns="http://www.w3.org/2000/svg"', '').replace('viewBox=', 'sc-camel-view-box=')
+               .replace('width="32" height="28" ', 'width="32" height="28" style="display:block;overflow:visible" ')
+               .strip())
+i = t.find('<svg width="30" height="26" sc-camel-view-box="0 0 30 26"')
+j = t.find('</svg>', i)
+if i < 0 or t.count('<svg width="30" height="26" sc-camel-view-box="0 0 30 26"') != 1:
+    sys.exit("design.html: header logo svg not found — build stopped")
+t = t[:i] + logo_inline + t[j + len('</svg>'):]
+
+def replace_method(head, body):
+    """Replace a class method (from `head` to the first line that closes it at two-space indent)."""
+    global t
+    if t.count(head) != 1:
+        sys.exit(f"design.html: method {head!r} found {t.count(head)} times — build stopped")
+    i = t.find(head)
+    j = t.find('\n  }\n', i)
+    t = t[:i] + body.rstrip('\n') + t[j + len('\n  }'):]
+
+replace_method('  drawCrawler(ctx,c){', r"""  drawCrawler(ctx,c){   // CrawlMeme peacock spider: fan behind, body, two big eyes; palette per variant
+    const big=c.kind==='scan', ca=Math.cos(c.ang), sa=Math.sin(c.ang), v=(c.variant||0)%4, t=performance.now()/1000, TAU=Math.PI*2;
+    const PAL=[{fan:['#ff7a1a','#19d3ff','#2b3bff'],stripe:'#ff3355',glow:'#19d3ff'},
+               {fan:['#ffd23f','#21e6a0','#0f8f6a'],stripe:'#ff7a1a',glow:'#21e6a0'},
+               {fan:['#ff5ad1','#8a5bff','#3a1fd1'],stripe:'#ffd23f',glow:'#b07bff'},
+               {fan:['#ff3355','#ff9f1a','#1fa7ff'],stripe:'#2b3bff',glow:'#ff9f1a'}][v];
+    const P=(lx,ly)=>({x:c.x+ca*lx-sa*ly,y:c.y+sa*lx+ca*ly});
+    ctx.lineCap='round'; ctx.lineJoin='round'; ctx.setLineDash([]);
+    const knees=[];
+    c.legs.forEach(l=>{
+      const hip=P(Math.cos(l.a)*c.L*0.22,Math.sign(Math.sin(l.a))*c.Wd*0.3);
+      const f=l.pos, dx=f.x-hip.x, dy=f.y-hip.y, d=Math.hypot(dx,dy)||1;
+      l.lifted=d>c.R*2.6;   // foot still anchored to an element scrolled far away: the leg is up until it steps
+      if(l.lifted) return;
+      const seg=c.R*l.k*0.62, h=Math.max(6,Math.sqrt(Math.max(0,seg*seg-d*d/4)));
+      let nx=-dy/d, ny=dx/d; const mx=(hip.x+f.x)/2, my=(hip.y+f.y)/2;
+      if(nx*(mx-c.x)+ny*(my-c.y)<0){nx=-nx;ny=-ny;}
+      const k={x:mx+nx*h*0.55,y:my+ny*h*0.55}; knees.push(k);
+      ctx.lineWidth=big?2.2:1.7; ctx.strokeStyle='rgba(255,216,176,0.85)';
+      ctx.beginPath(); ctx.moveTo(hip.x,hip.y); ctx.lineTo(k.x,k.y); ctx.stroke();
+      ctx.lineWidth=big?1.6:1.2; ctx.strokeStyle='rgba(255,236,214,0.7)';
+      ctx.beginPath(); ctx.moveTo(k.x,k.y); ctx.lineTo(f.x,f.y); ctx.stroke();
+    });
+    ctx.fillStyle=PAL.glow; knees.forEach(k=>{ctx.beginPath(); ctx.arc(k.x,k.y,big?2:1.6,0,TAU); ctx.fill();});
+    ctx.save(); ctx.translate(c.x,c.y); ctx.rotate(c.ang);
+    // fan (abdomen flap) at the rear, opening and closing slowly like a courtship display
+    const R=c.Wd*1.15*(0.9+0.1*Math.sin(t*2.2+c.phase)), fx=-c.L*0.04;
+    const half=(r,col)=>{ctx.fillStyle=col; ctx.beginPath(); ctx.ellipse(fx,0,r*0.9,r,0,Math.PI/2,Math.PI*1.5); ctx.closePath(); ctx.fill();};
+    half(R,PAL.fan[0]); half(R*0.8,PAL.fan[1]); half(R*0.56,PAL.fan[2]); half(R*0.32,PAL.fan[0]);
+    ctx.fillStyle=PAL.stripe; ctx.beginPath(); ctx.moveTo(fx,-c.Wd*0.07); ctx.lineTo(fx-R*0.9,-c.Wd*0.11); ctx.lineTo(fx-R*0.9,c.Wd*0.11); ctx.lineTo(fx,c.Wd*0.07); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle='rgba(7,9,11,0.7)'; ctx.lineWidth=0.8; ctx.beginPath(); ctx.ellipse(fx,0,R*0.9,R,0,Math.PI/2,Math.PI*1.5); ctx.stroke();
+    // body and eyes
+    ctx.fillStyle='#100c0a'; ctx.strokeStyle='rgba(0,200,5,0.85)'; ctx.lineWidth=1.1;
+    ctx.beginPath(); ctx.ellipse(c.L*0.2,0,c.L*0.26,c.Wd*0.44,0,0,TAU); ctx.fill(); ctx.stroke();
+    const glow=8+4*Math.sin(t*3+c.phase);
+    [-1,1].forEach(s=>{const ex=c.L*0.34, ey=s*c.Wd*0.16, r=c.Wd*0.14;
+      ctx.save(); ctx.shadowColor=PAL.glow; ctx.shadowBlur=glow; ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(ex,ey,r,0,TAU); ctx.fill(); ctx.restore();
+      ctx.strokeStyle=G; ctx.lineWidth=0.8; ctx.beginPath(); ctx.arc(ex,ey,r,0,TAU); ctx.stroke();
+      ctx.fillStyle='#ffffff'; ctx.beginPath(); ctx.arc(ex+r*0.3,ey-r*0.3,r*0.32,0,TAU); ctx.fill();});
+    ctx.restore();
+    // white-tipped feet
+    ctx.save(); ctx.shadowColor=PAL.glow; ctx.shadowBlur=8; ctx.fillStyle='#ffffff';
+    c.legs.forEach(l=>{if(l.lifted) return; ctx.beginPath(); ctx.arc(l.pos.x,l.pos.y,(big?2.4:1.8)+(l.t<1?1:0),0,TAU); ctx.fill();});
+    ctx.restore();
+  }
+""")
+
+# ---------------------------------------------------------------------------
+# All holders: under the result, every holder from /api/holders, 100 at a time («show more»), largest first:
+# rank, address (click copies; explorer link where the chain has one), % of float, «analysed» for the examined top.
+# Painted into its own element (like the early buyers panel), so the template only gains one container.
+# ---------------------------------------------------------------------------
+rep('earlyRef=React.createRef();', 'earlyRef=React.createRef(); allRef=React.createRef();')
+rep('earlyRef:this.earlyRef', 'earlyRef:this.earlyRef, allRef:this.allRef')
+rep('feed.job=d.job; poll(); step();', 'feed.job=d.job; this.m.job=d.job; poll(); step();')
+rep('handleResult(r){this.m.result=r; this.loadChart(); this.loadEarly(); this.watchIndex(r); this.bump();}',
+    'handleResult(r){this.m.result=r; this.loadChart(); this.loadEarly(); this.watchIndex(r); this.bump(); this.loadAll();}\n'
+    r"""  loadAll(tries=0){   // every holder (/api/holders), a page at a time; painted straight into allRef
+    const m=this.m, el=this.allRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.loadAll(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{};
+    if(!m.job||raw.band==='TOO_ESTABLISHED'||raw.band==='TOO_ACTIVE') return;
+    const MONO="font-family:'JetBrains Mono',monospace", ex=EXPLORER[chainOf(m.ca)], st={offset:0};
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    const title=mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','all holders');
+    const count=mk('span',MONO+';font-size:12px;color:#8a959c','loading…');
+    head.append(title,count);
+    const list=mk('div','display:flex;flex-direction:column;margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f;overflow:hidden');
+    const more=mk('button',MONO+';margin-top:12px;align-self:flex-start;height:36px;padding:0 16px;border:1px solid #1c252b;border-radius:8px;background:#0b1013;color:#9fd9ff;cursor:pointer;display:none','show 100 more');
+    const wrap=mk('div','display:flex;flex-direction:column'); wrap.append(head,list,more); el.append(wrap);
+    const pct=v=>v==null?'—':(v*100>=0.01?(v*100).toFixed(2)+'%':'<0.01%');
+    const row=x=>{
+      const r=mk('div','display:grid;grid-template-columns:56px minmax(0,1fr) 90px 80px;align-items:center;gap:10px;padding:9px 14px;border-top:1px solid #10161a;'+MONO+';font-size:12.5px');
+      const addr=ex?mk('a','color:#dfe5e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',x.wallet):mk('span','color:#dfe5e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:copy',x.wallet);
+      addr.title=x.wallet;
+      if(ex){addr.href=ex.account(x.wallet); addr.target='_blank'; addr.rel='noopener';}
+      else addr.addEventListener('click',()=>{try{navigator.clipboard.writeText(x.wallet); addr.style.color='#00c805'; setTimeout(()=>addr.style.color='#dfe5e8',1200);}catch(e){}});
+      r.append(mk('span','color:#5f6b72','#'+x.rank),addr,mk('span','color:#eef1f3;text-align:right',pct(x.share)),
+               mk('span','color:'+(x.analysed?'#00c805':'#3a454c')+';text-align:right;font-size:11px',x.analysed?'analysed':''));
+      return r;
+    };
+    const page=()=>{more.disabled=true;
+      fetch(`/api/holders?job=${encodeURIComponent(m.job)}&offset=${st.offset}&limit=100`,NO_STORE)
+        .then(r=>r.ok?r.json():null).catch(()=>null).then(d=>{
+          more.disabled=false;
+          if(this.m!==m) return;
+          if(!d||!d.done||d.total==null){count.textContent='holder list unavailable'; return;}
+          st.offset+=d.items.length;
+          count.textContent=d.total.toLocaleString('en-US')+' holders'+(d.complete?'':' · lower bound (largest accounts only)');
+          d.items.forEach(x=>list.appendChild(row(x)));
+          more.style.display=st.offset<d.total?'block':'none';
+        });};
+    more.addEventListener('click',page); page();
+  }""")
+rep('<div data-early-box="1" style="display:{{earlyDisplay}};margin-top:56px;flex-direction:column;gap:18px">'
+    '<div ref="{{earlyRef}}" style="display:flex;flex-direction:column;gap:18px"></div></div>',
+    '<div data-early-box="1" style="display:{{earlyDisplay}};margin-top:56px;flex-direction:column;gap:18px">'
+    '<div ref="{{earlyRef}}" style="display:flex;flex-direction:column;gap:18px"></div></div>\n\n'
+    '        <div ref="{{allRef}}" data-all-holders="1" style="margin-top:56px"></div>')
+
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'
 TITLE_NEW = '<title>' + BRAND + '</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')

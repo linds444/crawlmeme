@@ -20,8 +20,10 @@ LIMITED_MAX_SCORE = 79      # a limited scan is never CLEAN (80+)
 
 def holders_method(facts):
     """How holder balances were obtained."""
-    if facts.get("base") is not None:
-        return "top_accounts"            # Solana: getTokenLargestAccounts (top 20), holder count is a lower bound
+    if facts.get("base") is not None:   # Solana
+        if facts["base"].get("complete"):
+            return "all_accounts"        # Helius DAS: every token account
+        return "top_accounts"            # getTokenLargestAccounts (top 20) or a capped list: holder count a lower bound
     hist = (facts.get("flap") or facts.get("bankr") or {}).get("history") or {}
     if hist.get("mode") == "windowed" and not hist.get("top_exact"):
         return "windowed"                # large history read in windows: top holders approximate
