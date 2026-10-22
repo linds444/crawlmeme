@@ -11,6 +11,9 @@ Read-only: the scan runs in the background, the browser polls for events.
                                             "share_supply", "analysed"}]}  every holder, largest first (limit ≤ 1000)
   GET  /api/chart?token=CA               -> {"token", "chain", "pool", "dex", "timeframe", "candles", "price_usd"[, "stale_at" | "unavailable"]}
                                             GeckoTerminal candles [[ts, o, h, l, c, v]] oldest to newest; not part of the scan
+  GET  /radar                            -> radar.html (Phase 12 launch radar)
+  GET  /api/radar?window=&chain=&…        -> radar tokens with status and reasons (radar.py)
+  GET  /api/cron/radar?chain=             -> Phase 12 discovery (Authorization: Bearer $CRON_SECRET; GitHub Actions)
   GET  /api/cron/outcomes                 -> Phase 11 outcome worker (Authorization: Bearer $CRON_SECRET; Vercel Cron)
   GET  /api/early?token=CA               -> {"token", "chain", "available", "buyers": [...], "summary": {...}[, "stale_at"]}
                                             first 20 buyers and their current status (early.py); not part of the scan
@@ -73,6 +76,7 @@ from crawler.chains import bankr, flap, priority, registry
 from crawler.chains.evm import networks as evm_networks
 from crawler import early
 from crawler import outcomes
+from crawler import radar
 from crawler import engine
 from crawler import market
 from crawler import memguard
@@ -311,11 +315,16 @@ def last_event_after(headers, q):
         return 0
 
 
-def _reuse(token, now):
-    """job_id of a fresh cache entry or a running scan of the token, otherwise None (under _lock)."""
+RESCAN_MIN_S = 60          # a rescan on demand (radar) reuses a result younger than this, never an older one
+
+
+def _reuse(token, now, fresh=False):
+    """job_id of a fresh cache entry or a running scan of the token, otherwise None (under _lock).
+    fresh — a rescan on demand: a running scan is joined, a finished one only if younger than RESCAN_MIN_S."""
     jid = BY_TOKEN.get(token)
     job = JOBS.get(jid)
-    if job and (not job["done"] or (job["result"] and now - job["ts"] < CACHE_TTL and not _index_ready(job["result"]))):
+    ttl = RESCAN_MIN_S if fresh else CACHE_TTL
+    if job and (not job["done"] or (job["result"] and now - job["ts"] < ttl and not _index_ready(job["result"]))):
         return jid
     return None
 
@@ -340,13 +349,14 @@ def scan_stats():
     return active, f", last min: {started} started, {busy} busy"
 
 
-def start_scan(token, client=None, chain=None, background=False):
+def start_scan(token, client=None, chain=None, background=False, fresh=False):
     """job_id: fresh cache for the token or an already running scan of the same token, otherwise a new one.
     New only if there is room in the queue and memory is below the threshold, otherwise Busy; and if client (key, per-minute limit)
     has not exhausted the new-scan limit, otherwise RateLimited. Cache hits and joining a running scan do not use the limit.
     chain — explicit chain for a 0x address (engine.chain_of); without it an address found on several enabled chains
     raises engine.AmbiguousChain.
-    background — run the scan in a thread even in serverless mode (the caller streams its events meanwhile)."""
+    background — run the scan in a thread even in serverless mode (the caller streams its events meanwhile).
+    fresh — rescan on demand (radar): the cache is used only if under RESCAN_MIN_S old; uses the rate limit."""
     chain, token = engine.chain_of(token, chain)
     key = _key(chain, token)
     now = time.time()
@@ -356,7 +366,7 @@ def start_scan(token, client=None, chain=None, background=False):
             if BY_TOKEN.get(k) == jid:
                 del BY_TOKEN[k]
             del JOBS[jid]
-        jid = _reuse(key, now)
+        jid = _reuse(key, now, fresh)
         if jid:
             return jid
         active = _ACTIVE[0]
@@ -365,7 +375,7 @@ def start_scan(token, client=None, chain=None, background=False):
     if memguard.over(live=active, cap=MAX_CONCURRENT):   # outside _lock: cache reset and gc do not block other requests
         _busy("memory")
     with _lock:
-        jid = _reuse(key, now)
+        jid = _reuse(key, now, fresh)
         if jid:
             return jid
         if _ACTIVE[0] >= MAX_CONCURRENT + SCAN_QUEUE_MAX:
@@ -391,6 +401,12 @@ def start_scan(token, client=None, chain=None, background=False):
                 del BY_TOKEN[key]
         raise Busy("thread") from None
     return jid
+
+
+def radar_chains():
+    """Chains discovery may scan: Robinhood always, Solana with SOLANA_ENABLED, BNB / Base when enabled."""
+    out = ["robinhood"] + (["solana"] if engine.solana_enabled() else [])
+    return out + [c for c in evm_networks.enabled_chains() if c not in out]
 
 
 def chains_config():
@@ -846,19 +862,42 @@ class H(BaseHTTPRequestHandler):
         finally:   # a serverless function must not end its response before the job's stores (memory) have run
             self._wait_done(job)
 
-    def _cron_outcomes(self):
-        """Phase 11 outcome worker (Vercel Cron). Only with Authorization: Bearer $CRON_SECRET — Vercel sends it
-        when the variable is set; unset, the endpoint refuses (fails closed). Compared in constant time."""
+    def _cron_refused(self, what):
+        """False when the request carries Authorization: Bearer $CRON_SECRET (constant-time compare); otherwise the
+        refusal is sent and True returned. Unset secret: every request is refused (fails closed)."""
         secret = (os.environ.get("CRON_SECRET") or "").strip()
         if not secret:
-            return self._send(503, {"error": "outcome worker not configured (CRON_SECRET)"})
+            self._send(503, {"error": f"{what} not configured (CRON_SECRET)"})
+            return True
         got = self.headers.get("authorization") or ""
         if not hmac.compare_digest(got.encode(), ("Bearer " + secret).encode()):
-            return self._send(401, {"error": "unauthorized"})
+            self._send(401, {"error": "unauthorized"})
+            return True
+        return False
+
+    def _cron_outcomes(self):
+        """Phase 11 outcome worker (Vercel Cron sends the secret when CRON_SECRET is set)."""
+        if self._cron_refused("outcome worker"):
+            return
         try:
             return self._send(200, outcomes.run())
         except memory_db.MemoryUnavailable as e:
             return self._send(503, {"error": f"memory unavailable: {e}"})
+
+    def _cron_radar(self, q):
+        """Phase 12 radar discovery for one chain (GitHub Actions every 30 min, same secret)."""
+        if self._cron_refused("radar discovery"):
+            return
+        chain = (q.get("chain") or [""])[0].lower()
+        if chain not in radar_chains():
+            return self._send(400, {"error": "unknown or disabled chain"})
+        if not memory_db.enabled():
+            return self._send(503, {"error": "memory is off"})
+
+        def record(res, memo):   # the same stores a page scan gets (the recent feed and the memory brain)
+            record_recent(res)
+            memory_db.record(res, memo)
+        return self._send(200, radar.discover(chain, record=record))
 
     @staticmethod
     def _wait_done(job, limit=STORES_WAIT_S):
@@ -916,7 +955,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, BUSY, headers={"retry-after": str(RETRY_AFTER)})
             try:
                 jid = start_scan(body.get("token"), scan_client(self.headers, self.client_address[0]),
-                                 chain=body.get("chain"), background=stream)
+                                 chain=body.get("chain"), background=stream, fresh=body.get("fresh") is True)
                 with _lock:
                     job = JOBS.get(jid)
                 if stream and job is not None:   # events as they happen, in this same response (docs/events.md)
@@ -995,6 +1034,12 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"error": str(e)})
         if u.path == "/api/cron/outcomes":
             return self._cron_outcomes()
+        if u.path == "/api/cron/radar":
+            return self._cron_radar(q)
+        if u.path == "/api/radar":
+            return self._send(200, radar.query(q))
+        if u.path == "/radar":
+            return self._send_page(os.path.join(WEB, "radar.html"))
         if u.path == "/api/early":
             try:
                 token = (q.get("token") or [""])[0]

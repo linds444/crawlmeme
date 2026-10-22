@@ -209,3 +209,18 @@ def outcome_record(rows, timeout=RECORD_TIMEOUT):
     if not enabled() or not rows:
         return 0
     return _rpc("outcome_record", {"p": {"rows": rows}}, timeout) or 0
+
+
+iso = _iso   # radar and backtests pass as-of times in the same format
+
+
+def call(name, args, timeout=RECORD_TIMEOUT):
+    """Any server-only memory function (radar_feed, radar_recent, market_snapshot_record); None when memory is off or
+    the call failed (logged by type, never with the key)."""
+    if not enabled():
+        return None
+    try:
+        return _rpc(name, args, timeout)
+    except MemoryUnavailable as e:
+        print(f"memory: {name} failed ({e})", flush=True)
+        return None

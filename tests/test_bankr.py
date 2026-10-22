@@ -561,10 +561,8 @@ class TestHistory(unittest.TestCase):
             self.assertGreater(h["index_eta_s"], 0)
             self.assertTrue(until(lambda: bankr.index_status(BTOKEN)["state"] == "building"))
             gate.set()
-            for _ in range(100):
-                if BTOKEN not in bankr._INDEX_BUILDING:
-                    break
-                _t.sleep(0.01)
+            # the builder thread finishes on its own schedule: wait for it (a loaded test run can take over 1 s)
+            self.assertTrue(until(lambda: BTOKEN not in bankr._INDEX_BUILDING))
             self.assertEqual(bankr.index_status(BTOKEN)["state"], "unavailable")   # failure: no retry within INDEX_RETRY_S
         self.assertEqual([x[:2] for x in started], [(BTOKEN, LAUNCH_BLOCK)])
         self.assertGreater(started[0][2], 3)                                     # history estimate — above the cap

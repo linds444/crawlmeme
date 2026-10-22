@@ -2690,6 +2690,13 @@ rep("""    if(!(mem.crews||[]).length&&!dep.tokens&&!sw.length&&!(mem.repeat_fun
 rep("""      'From CrawlMeme\\'s own memory of earlier scans (other tokens only). A crew is holders that were top holders of 2+ other tokens together. Evidence only, not part of the score yet.'));""",
     """      'From CrawlMeme\\'s own memory of earlier scans (other tokens only), as it stood when this scan started. A crew is holders that were top holders of 2+ other tokens together. Outcomes (→ rugged, dead, up) are market facts measured after those scans, never our own verdicts. The live verdict does not use memory yet; the shadow models in «how sure is this» do.'));""")
 
+# ---------------------------------------------------------------------------
+# Launch radar (Phase 12): «radar» link in the header (desktop), before «how it works»; the page is /radar (radar.html)
+# ---------------------------------------------------------------------------
+rep('        <a class="cs-wide" href="#how" sc-camel-on-click="{{navHow}}"',
+    '        <a class="cs-wide" href="/radar" data-radar="1" data-grip="1" style="color:#8a959c" style-hover="color:#ffffff">radar</a>\n'
+    '        <a class="cs-wide" href="#how" sc-camel-on-click="{{navHow}}"')
+
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'
 TITLE_NEW = '<title>' + BRAND + '</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')

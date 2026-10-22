@@ -1,0 +1,46 @@
+# Phase 12 launch radar discovery: every 30 minutes, ask the deployed server to find and scan new launches on each
+# chain (GET /api/cron/radar?chain=…). The server does the work; this job only triggers it, one chain per request so
+# each stays inside Vercel's 60 s function limit.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   CRON_SECRET                    the same value as the Vercel environment variable CRON_SECRET (required)
+#   VERCEL_AUTOMATION_BYPASS_SECRET  Vercel → Settings → Deployment Protection → Protection Bypass for Automation
+#                                  (needed while Vercel Authentication protects the deployment)
+# Repository variable (optional): RADAR_URL, default https://crawlmeme.vercel.app
+name: radar discovery
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: radar-discovery
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Discover and scan new launches
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          RADAR_URL: ${{ vars.RADAR_URL || 'https://crawlmeme.vercel.app' }}
+        run: |
+          set -u
+          if [ -z "$CRON_SECRET" ]; then echo "CRON_SECRET is not set: nothing to do"; exit 0; fi
+          failed=0
+          for chain in robinhood solana base bsc; do
+            code=$(curl -sS -o out.json -w '%{http_code}' -m 75 \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              ${BYPASS:+-H "x-vercel-protection-bypass: $BYPASS"} \
+              "$RADAR_URL/api/cron/radar?chain=$chain" || echo 000)
+            echo "$chain: HTTP $code"
+            head -c 600 out.json; echo
+            case "$code" in 200|400) ;; *) failed=1 ;; esac   # 400: chain disabled on the server
+          done
+          exit $failed
