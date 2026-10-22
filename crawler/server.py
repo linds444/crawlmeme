@@ -65,6 +65,7 @@ from crawler import db
 from crawler import alerts_notify
 from crawler import alerts_recheck
 from crawler import detect
+from crawler import memory_db
 from crawler.chains import bankr, flap, priority, registry
 from crawler.chains.evm import networks as evm_networks
 from crawler import early
@@ -241,6 +242,7 @@ def _run_job(job_id, token):
             opmem.record(res)       # queue only (OPMEM_ENABLED), the write happens in its own thread
             record_recent(res)
             record_snapshot(res)
+            memory_db.record(res)   # memory brain (Supabase): one RPC; on Vercel nothing runs after the response
     finally:                        # the job ends whatever a store did
         with _cv:
             if err:

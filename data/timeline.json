@@ -53,10 +53,15 @@
       "title": "Relationship graph",
       "text": "Funding links between holders, with exchange-like hubs told apart, drawn as a live graph of who is tied to whom.",
       "url": "https://github.com/linds444/crawlmeme/pull/1"
+    },
+    {
+      "date": "Oct 22",
+      "title": "Memory and cabals",
+      "text": "Every scan is remembered: holders that keep showing up together across tokens, repeat funders and serial deployers are called out.",
+      "url": "https://github.com/linds444/crawlmeme/pull/1"
     }
   ],
   "next": [
-    "Repeat operators and cabals",
     "Launch Radar",
     "Rug and Gem Replay"
   ]

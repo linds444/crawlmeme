@@ -17,6 +17,7 @@ from crawler.chains import robinhood as ch   # noqa: E402
 from crawler import engine, market                # noqa: E402
 from crawler.chains import solana as _sol          # noqa: E402
 _sol.HELIUS_KEY = ""   # offline: Helius parsed history (wallet histories, funding) is never called for real
+os.environ["MEMORY_ENABLED"] = "off"   # offline: the Supabase memory brain is only reached by tests that enable it
 
 TOKEN = "0x" + "ab" * 20
 OTHER = "0x" + "cd" * 20              # not Pons V2: get_launch returns None

@@ -19,6 +19,8 @@ from crawler import detect as d
 from crawler import coverage
 from crawler import forensics
 from crawler import graph
+from crawler import cabals
+from crawler import memory_db
 from crawler.chains.evm import funding as evm_funding
 from crawler import market
 BUDGET = 25.0          # seconds for the whole scan (README)
@@ -602,6 +604,13 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     gate.close()
     ex.shutdown(wait=False, cancel_futures=True)
     fex.shutdown(wait=False, cancel_futures=True)
+    # memory brain (Phase 7): the same holders, funders and deployer in other tokens — read while links are computed
+    mem_box = {}
+    mem_funders = [f["funder"] for f in funders.values() if f and f.get("found") and f.get("funder")]
+    mt = threading.Thread(target=lambda: mem_box.update(
+        mem=memory_db.lookup(chain, token, hs, mem_funders, launch.get("deployer"))), daemon=True)
+    if memory_db.enabled():
+        mt.start()
     unread = [w for w in hs if w not in done]
     for w in unread:
         flag(w)
@@ -712,6 +721,13 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     except Exception as e:   # evidence only: a failure here never costs the verdict
         print(f"forensics: {token}: {type(e).__name__}: {e}", flush=True)
         fz = None
+    if mt.is_alive() or mt.ident is not None:
+        mt.join(timeout=max(0.0, min(memory_db.LOOKUP_TIMEOUT, deadline + 3.0 - time.time())))
+    try:
+        mem = cabals.analyse(mem_box.get("mem"), holders, ratio, funders, funder_out, d.HUB_MIN_OUT)
+    except Exception as e:
+        print(f"cabals: {token}: {type(e).__name__}: {e}", flush=True)
+        mem = None
     try:   # relationship graph (Phase 6): the evidence behind every link, for the page and the memory brain
         rel = graph.build(chain, holders, sig, links, packs, ops, funders, funder_out, contracts, d.HUB_MIN_OUT, clock)
     except Exception as e:
@@ -736,7 +752,7 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
                      "forensics": (fz or {}).get("wallets", {}).get(a),
                      "signals": sig[a]} for a, _, s in holders],
         "forensics": None if fz is None else {k: v for k, v in fz.items() if k != "wallets"},
-        "links": links, "packs": packs, "operators": ops, "graph": rel,
+        "links": links, "packs": packs, "operators": ops, "graph": rel, "memory": mem,
         "score": sc["score"], "band": sc["band"], "parts": sc["parts"], "gates": sc["gates"],
         "metrics": sc["metrics"], "headline": sc["headline"], "reason": reason, "notes": sc.get("notes", []),
         "reserve": facts["reserve"],

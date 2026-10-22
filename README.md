@@ -27,7 +27,7 @@ Telegram bot: [@CrawlScanBot](https://t.me/CrawlScanBot)
 > [!NOTE]
 > **This is a private, self-hosted fork of CrawlScan V1 (MIT, original copyright retained in [LICENSE](LICENSE)),
 > being extended phase by phase.** Progress, verified support and measurements:
-> [Phase 1 audit](docs/phase-1-audit.md) · [Phase 2 chains](docs/phase-2-chains.md) · [Phase 3 holders](docs/phase-3-holders.md) · [Phase 4 event stream](docs/events.md) · [Phase 5 forensics](docs/phase-5-forensics.md) · [Phase 6 graph](docs/phase-6-graph.md).
+> [Phase 1 audit](docs/phase-1-audit.md) · [Phase 2 chains](docs/phase-2-chains.md) · [Phase 3 holders](docs/phase-3-holders.md) · [Phase 4 event stream](docs/events.md) · [Phase 5 forensics](docs/phase-5-forensics.md) · [Phase 6 graph](docs/phase-6-graph.md) · [Phase 7 memory](docs/phase-7-memory.md).
 > Run: `python -m crawler.server` · tests: `python -m unittest discover -s tests` · mainnet checks:
 > `CRAWLER_LIVE=1 python -m unittest tests/test_live_launchpads.py`. The text below describes upstream V1.
 

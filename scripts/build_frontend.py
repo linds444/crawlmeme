@@ -2439,6 +2439,62 @@ rep("  paintForensics(tries=0){", r"""  paintGraph(tries=0){   // relationship g
   }
   paintForensics(tries=0){""")
 
+# ---------------------------------------------------------------------------
+# Seen before (Phase 7, memory brain): crews (holders that top-held other tokens together), the deployer's other
+# launches, funders seen in other tokens, and each top holder's appearances elsewhere with those tokens' verdicts.
+# Painted from result.memory; nothing when memory is not configured.
+# ---------------------------------------------------------------------------
+rep('grRef=React.createRef();', 'grRef=React.createRef(); memRef=React.createRef();')
+rep('grRef:this.grRef', 'grRef:this.grRef, memRef:this.memRef')
+rep('this.paintForensics(); this.paintGraph();}', 'this.paintForensics(); this.paintGraph(); this.paintMemory();}')
+rep('        <div ref="{{grRef}}" data-graph="1" style="margin-top:56px"></div>',
+    '        <div ref="{{memRef}}" data-memory="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{grRef}}" data-graph="1" style="margin-top:56px"></div>')
+rep("  paintGraph(tries=0){", r"""  paintMemory(tries=0){   // seen before (Phase 7)
+    const m=this.m, el=this.memRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintMemory(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, mem=raw.memory;
+    if(!mem) return;
+    const MONO="font-family:'JetBrains Mono',monospace", ex=EXPLORER[chainOf(m.ca)];
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const short=a=>a?a.slice(0,6)+'…'+a.slice(-4):'—', pct=v=>(v*100).toFixed(1)+'%';
+    const addr=(a,color)=>{const t=ex?mk('a','color:'+color,short(a)):mk('span','color:'+color,short(a)); t.title=a; if(ex){t.href=ex.account(a); t.target='_blank'; t.rel='noopener';} return t;};
+    const BC={DANGER:'#ff4d4d',RISKY:'#ffb020',OK:'#9fd9ff',CLEAN:'#00c805'};
+    const chip=t=>{const c=BC[t.band]||'#8a959c', s=mk('span',MONO+`;display:inline-flex;gap:4px;padding:2px 7px;border:1px solid ${c}55;border-radius:999px;font-size:11px;color:#dfe5e8`);
+      s.append(mk('span','',t.ticker?'$'+t.ticker:short(t.token)),mk('span','color:'+c,(t.band||'?').toLowerCase())); s.title=t.token; return s;};
+    const mm=mem.memory||{};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','seen before'),
+      mk('span',MONO+';font-size:12px;color:#8a959c',`memory: ${(mm.tokens||0).toLocaleString('en-US')} tokens · ${(mm.scans||0).toLocaleString('en-US')} scans on this chain`));
+    el.append(head);
+    const rank=w=>{const i=(raw.holders||[]).findIndex(h=>h.wallet===w); return i<0?'?':'#'+(i+1);};
+    const box=(c,label,...kids)=>{const n=mk('div',MONO+`;margin-top:12px;padding:12px 14px;border:1px solid rgba(${c},0.35);border-radius:10px;background:rgba(${c},0.06);font-size:12.5px;color:#eef1f3;display:flex;flex-wrap:wrap;gap:6px;align-items:center`);
+      n.append(mk('span',`color:rgb(${c})`,label),...kids); el.append(n);};
+    (mem.crews||[]).forEach(c=>{const ws=mk('span',''); c.wallets.forEach((w,i)=>{if(i) ws.append(document.createTextNode(', ')); ws.append(mk('span','',rank(w)+' '),addr(w,'#ffd0d0'));});
+      box('255,77,77','crew',ws,mk('span','',`top-held ${c.tokens.length} other tokens together (up to ${c.together} at once) · ${pct(c.share)} of float now`));});
+    const dep=mem.deployer||{};
+    if(dep.tokens){const chips=mk('span','display:inline-flex;flex-wrap:wrap;gap:4px'); (dep.list||[]).forEach(t=>chips.append(chip(t)));
+      box(dep.danger?'255,77,77':'255,176,32','serial deployer',mk('span','',`launched ${dep.tokens} other token${dep.tokens>1?'s':''} we scanned`+(dep.danger?` · ${dep.danger} rated danger`:'')),chips);}
+    (mem.repeat_funders||[]).filter(r=>r.other_tokens>0).forEach(r=>{const hub=r.hub===true;
+      box(hub?'138,149,156':'255,176,32',hub?'hub funder':'repeat funder',addr(r.funder,hub?'#c9d1d6':'#ffe0b0'),
+        mk('span','',`funded top holders of ${r.other_tokens} other token${r.other_tokens>1?'s':''} (${r.other_wallets} wallets)`+(hub?' · exchange-like, not evidence':'')));});
+    const sw=mem.seen_wallets||[];
+    if(sw.length){const tbl=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f;overflow-x:auto');
+      const grid='display:grid;grid-template-columns:44px minmax(110px,160px) 90px 80px minmax(260px,1fr);align-items:center;gap:8px;padding:9px 14px;min-width:640px;';
+      const hdr=mk('div',grid+MONO+';font-size:11px;color:#5f6b72'); ['#','wallet','other tokens','danger','recent'].forEach(x=>hdr.append(mk('span','',x))); tbl.append(hdr);
+      sw.forEach(s=>{const r=mk('div',grid+'border-top:1px solid #10161a;'+MONO+';font-size:12.5px;color:#dfe5e8'), chips=mk('span','display:flex;flex-wrap:wrap;gap:4px');
+        (s.list||[]).slice(0,6).forEach(t=>chips.append(chip(t)));
+        r.append(mk('span','color:#5f6b72','#'+s.rank),addr(s.wallet,'#dfe5e8'),mk('span','',String(s.tokens)),
+                 mk('span','color:'+(s.danger?'#ff4d4d':'#8a959c'),String(s.danger)),chips); tbl.append(r);});
+      el.append(tbl);}
+    if(!(mem.crews||[]).length&&!dep.tokens&&!sw.length&&!(mem.repeat_funders||[]).some(r=>r.other_tokens>0))
+      el.append(mk('p',MONO+';margin:12px 0 0;font-size:12px;color:#8a959c','None of these holders, their funders or the deployer appear in other tokens CrawlMeme has scanned yet.'));
+    el.append(mk('p',MONO+';margin:10px 0 0;font-size:11.5px;line-height:1.6;color:#5f6b72',
+      'From CrawlMeme\'s own memory of earlier scans (other tokens only). A crew is holders that were top holders of 2+ other tokens together. Evidence only, not part of the score yet.'));
+  }
+  paintGraph(tries=0){""")
+
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'
 TITLE_NEW = '<title>' + BRAND + '</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')
