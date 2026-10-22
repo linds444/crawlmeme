@@ -2495,6 +2495,59 @@ rep("  paintGraph(tries=0){", r"""  paintMemory(tries=0){   // seen before (Phas
   }
   paintGraph(tries=0){""")
 
+# ---------------------------------------------------------------------------
+# Verdict model and data health (Phase 8): confidence, the live scoring model, what the shadow model would say and
+# why, and what the verdict stands on (coverage, wallets read, verification, prices, funding, memory, cost).
+# ---------------------------------------------------------------------------
+rep('memRef=React.createRef();', 'memRef=React.createRef(); dhRef=React.createRef();')
+rep('memRef:this.memRef', 'memRef:this.memRef, dhRef:this.dhRef')
+rep('this.paintGraph(); this.paintMemory();}', 'this.paintGraph(); this.paintMemory(); this.paintHealth();}')
+rep('        <div ref="{{memRef}}" data-memory="1" style="margin-top:56px"></div>',
+    '        <div ref="{{dhRef}}" data-health="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{memRef}}" data-memory="1" style="margin-top:56px"></div>')
+rep("  paintMemory(tries=0){", r"""  paintHealth(tries=0){   // verdict model and data health (Phase 8)
+    const m=this.m, el=this.dhRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintHealth(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, dh=raw.data_health, md=raw.model;
+    if(!dh||!md) return;
+    const MONO="font-family:'JetBrains Mono',monospace";
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const CC={high:'#00c805',medium:'#ffb020',low:'#ff4d4d'}, BC={DANGER:'#ff4d4d',RISKY:'#ffb020',OK:'#9fd9ff',CLEAN:'#00c805'};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    const left=mk('div','display:flex;align-items:baseline;gap:12px');
+    left.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','how sure is this'),
+      mk('span',MONO+`;font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid ${CC[dh.confidence]}66;color:${CC[dh.confidence]}`,dh.confidence+' confidence'));
+    head.append(left, mk('span',MONO+';font-size:12px;color:#8a959c','model '+md.id));
+    el.append(head);
+    const live=(md.scores||{})[md.id]||{};
+    Object.entries(md.scores||{}).filter(([k])=>k!==md.id).forEach(([k,v])=>{
+      const same=v.band===live.band&&v.score===live.score;
+      const n=mk('div',MONO+';margin-top:12px;padding:12px 14px;border:1px solid #1c252b;border-radius:10px;background:#0b1013;font-size:12.5px;color:#dfe5e8;display:flex;flex-wrap:wrap;gap:6px;align-items:center');
+      n.append(mk('span','color:#9fd9ff',k+' (shadow)'));
+      if(v.score==null){n.append(mk('span','color:#8a959c','no verdict'));}
+      else if(same){n.append(mk('span','color:#8a959c','agrees: '+(v.band||'').toLowerCase()+' '+v.score));}
+      else{n.append(mk('span','color:'+(BC[v.band]||'#dfe5e8'),(v.band||'').toLowerCase()+' '+v.score),
+        mk('span','color:#8a959c','— '+(v.adjustments||[]).map(a=>a.why+' ('+a.points+')').join(' · ')));}
+      el.append(n);});
+    const rows=[
+      ['coverage',(dh.coverage||'—')+(dh.reasons&&dh.reasons.length?' · '+dh.reasons.join('; '):'')],
+      ['wallets read',dh.wallets_examined?`${dh.wallets_read} of ${dh.wallets_examined}`:'—'],
+      ['holder balances',(dh.holders_method||'—').replace(/_/g,' ')+(dh.history_verified===true?' · verified against the chain':dh.history_verified===false?' · verification failed':'')],
+      ['market data',({gt:'GeckoTerminal',dexscreener:'DexScreener',dexpaprika:'DexPaprika',ds:'DexScreener',dp:'DexPaprika'})[dh.market_source]||dh.market_source||'—'],
+      ['prices for P&L',dh.priced?`${dh.price_points} candles`:'none'],
+      ['funding read',dh.funding_read!=null?`${dh.funding_read} wallets`:'—'],
+      ['memory',dh.memory==null?'off':dh.memory.available?`${(dh.memory.tokens||0).toLocaleString('en-US')} tokens · ${(dh.memory.scans||0).toLocaleString('en-US')} scans`:'unavailable this scan'],
+      ['cost',`${dh.elapsed_s}s · ${dh.rpc_requests} RPC requests`]];
+    const grid=mk('div','margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1px;border:1px solid #141b20;border-radius:12px;overflow:hidden;background:#141b20');
+    rows.forEach(([k,v])=>{const c=mk('div','background:#090c0f;padding:10px 14px;display:flex;flex-direction:column;gap:4px');
+      c.append(mk('span',MONO+';font-size:11px;color:#5f6b72',k),mk('span',MONO+';font-size:12.5px;color:#dfe5e8;overflow-wrap:anywhere',v)); grid.append(c);});
+    el.append(grid);
+    el.append(mk('p',MONO+';margin:10px 0 0;font-size:11.5px;line-height:1.6;color:#5f6b72',
+      'The live model gives the verdict. Shadow models are scored on the same evidence and kept in memory, so they can be checked against what tokens actually did before one replaces it.'));
+  }
+  paintMemory(tries=0){""")
+
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'
 TITLE_NEW = '<title>' + BRAND + '</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')

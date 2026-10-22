@@ -19,7 +19,6 @@ import json, os, time, urllib.error, urllib.parse, urllib.request
 
 LOOKUP_TIMEOUT = 3.0     # seconds: the scan waits no longer for memory
 RECORD_TIMEOUT = 4.0
-MODEL = "crawlmeme-1"    # verdict model written with every scan (scoring versioning, Phase 8)
 STATS = {"lookups": 0, "records": 0, "errors": 0}
 
 
@@ -107,7 +106,11 @@ def payload(res):
             "launchpad": res.get("launchpad") or ("pons" if res["chain"] == "robinhood" else None),
             "deployer": launch.get("deployer"), "band": res.get("band"), "score": res.get("score"),
             "coverage": (res.get("coverage") or {}).get("level"), "holders_total": res.get("holders_total"),
-            "largest_operator_share": max(merged) if merged else None, "model": MODEL, "rug": res.get("rug"),
+            "largest_operator_share": max(merged) if merged else None,
+            "model": (res.get("model") or {}).get("id") or "crawlmeme-1", "rug": res.get("rug"),
+            "scores": {k: {"score": v.get("score"), "band": v.get("band"),
+                           "adjustments": [a["code"] for a in v.get("adjustments") or []]}
+                       for k, v in ((res.get("model") or {}).get("scores") or {}).items()},
             "holders": holders, "funding": funding, "funders": funders, "edges": edges}
 
 

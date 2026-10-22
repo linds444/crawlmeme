@@ -5,6 +5,7 @@ Read-only: the scan runs in the background, the browser polls for events.
   GET  /api/events?job=ID&after=N        -> {"events": [...], "done": bool}  (events with i >= N)
   GET  /api/result?job=ID                -> {"done", "result" | "error"}
   POST /api/scan with Accept: text/event-stream  -> the scan's events as Server-Sent Events in the same response
+  GET  /api/rescore?job=ID[&model=M]    -> {"live", "models": {id: {"score", "band", "gates", "adjustments"}}}
   GET  /api/stream?job=ID[&after=N]      -> Server-Sent Events of a job (Last-Event-ID resumes); docs/events.md
   GET  /api/holders?job=ID&offset=0&limit=100 -> {"total", "complete", "items": [{"rank", "wallet", "balance", "share",
                                             "share_supply", "analysed"}]}  every holder, largest first (limit ≤ 1000)
@@ -66,6 +67,7 @@ from crawler import alerts_notify
 from crawler import alerts_recheck
 from crawler import detect
 from crawler import memory_db
+from crawler import scoring
 from crawler.chains import bankr, flap, priority, registry
 from crawler.chains.evm import networks as evm_networks
 from crawler import early
@@ -997,6 +999,20 @@ class H(BaseHTTPRequestHandler):
                 return self._stream(jid, job, last_event_after(self.headers, q))
             finally:
                 self._stream_release()
+        if u.path == "/api/rescore":   # a finished scan's verdict under every scoring model (or one: &model=)
+            job = self._job(q)
+            if job is None:
+                return self._send(404, {"error": "unknown job"})
+            model = (q.get("model") or [None])[0]
+            with _lock:
+                res = job["result"] if job["done"] else None
+            if res is None:
+                return self._send(409 if not job["done"] else 422, {"error": "scan not finished" if not job["done"]
+                                                                  else "scan failed: no verdict to rescore"})
+            try:
+                return self._send(200, {"live": scoring.current(), "models": scoring.rescore(res, model)})
+            except KeyError:
+                return self._send(400, {"error": "unknown model", "models": list(scoring.MODELS)})
         if u.path == "/api/holders":   # every holder of a finished scan, a page at a time
             job = self._job(q)
             if job is None:

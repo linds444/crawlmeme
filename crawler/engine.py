@@ -21,6 +21,7 @@ from crawler import forensics
 from crawler import graph
 from crawler import cabals
 from crawler import memory_db
+from crawler import scoring
 from crawler.chains.evm import funding as evm_funding
 from crawler import market
 BUDGET = 25.0          # seconds for the whole scan (README)
@@ -672,6 +673,14 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     # in the dev share but not in q (cannot be sold now); dev -- dev share from contracts (rule applies even when limited).
     # Pons and Flap: None -- old path
     curve, locked = facts.get("impact_curve"), facts.get("locked")
+    # memory (Phase 7) before the verdict: the live scoring model may use it (scoring.py)
+    if mt.is_alive() or mt.ident is not None:
+        mt.join(timeout=max(0.0, min(memory_db.LOOKUP_TIMEOUT, deadline + 3.0 - time.time())))
+    try:
+        mem = cabals.analyse(mem_box.get("mem"), holders, ratio, funders, funder_out, d.HUB_MIN_OUT)
+    except Exception as e:
+        print(f"cabals: {token}: {type(e).__name__}: {e}", flush=True)
+        mem = None
     sc = d.score(holders, sig, ops, base, facts["reserve"], gt.get("liquidity_usd"), reserve_ok=reserve_ok,
                  limited=limited, q_factor=q_factor, limited_note=limited_note, impact_curve=curve, locked=locked,
                  dev=facts.get("dev"), partial=partial_scan is not None)
@@ -681,6 +690,11 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
                           [{k: p.get(k) for k in ("name", "requests", "errors", "rate_limited", "cooling")}
                            for p in client.health()["providers"]] if client is not None else [])
     sc = coverage.apply(sc, cov)
+    # every scoring model on the same evidence; the live one (SCORE_MODEL) gives the verdict, the rest are shadows
+    models = scoring.evaluate(sc, mem)
+    live = scoring.current()
+    if live != scoring.BASE:
+        sc = dict(sc, score=models[live]["score"], band=models[live]["band"], gates=models[live]["gates"])
     reason = _reason(sc, base, len(holders))
     # probably rug: only computation on already collected data, no network requests
     # and only if DANGER was triggered by a behavioral hard rule (not a single whale in a thin pool)
@@ -721,13 +735,6 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     except Exception as e:   # evidence only: a failure here never costs the verdict
         print(f"forensics: {token}: {type(e).__name__}: {e}", flush=True)
         fz = None
-    if mt.is_alive() or mt.ident is not None:
-        mt.join(timeout=max(0.0, min(memory_db.LOOKUP_TIMEOUT, deadline + 3.0 - time.time())))
-    try:
-        mem = cabals.analyse(mem_box.get("mem"), holders, ratio, funders, funder_out, d.HUB_MIN_OUT)
-    except Exception as e:
-        print(f"cabals: {token}: {type(e).__name__}: {e}", flush=True)
-        mem = None
     try:   # relationship graph (Phase 6): the evidence behind every link, for the page and the memory brain
         rel = graph.build(chain, holders, sig, links, packs, ops, funders, funder_out, contracts, d.HUB_MIN_OUT, clock)
     except Exception as e:
@@ -761,4 +768,7 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
         "rug": rug, "partial_scan": partial_scan,
         "unread": unread, "use_funding": bool(funding_links() and funders),
         "elapsed_s": elapsed, "rpc_requests": a.REQUESTS[0] - r0,
+        "model": {"id": live, "scores": models},
+        "data_health": scoring.data_health(cov, fz, mem, memory_db.enabled(), gt.get("source"), elapsed,
+                                           a.REQUESTS[0] - r0),
     }

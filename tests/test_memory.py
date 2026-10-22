@@ -89,7 +89,7 @@ class TestClient(StubBase):
         self.assertEqual(memory_db.record(res), 7)
         p = next(a for path, _, a in srv.seen if path.endswith("/memory_record"))["p"]
         self.assertEqual((p["chain"], p["token"], p["band"], p["model"]), ("robinhood", fakes.TOKEN, res["band"],
-                                                                            memory_db.MODEL))
+                                                                            "crawlmeme-1"))
         self.assertEqual([h["rank"] for h in p["holders"]], list(range(1, len(res["holders"]) + 1)))
         self.assertEqual(p["deployer"], fakes.DEPLOYER)
 
