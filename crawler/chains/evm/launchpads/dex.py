@@ -147,6 +147,26 @@ def _depth(ad, pools):
     return sorted(v23, key=lambda p: (p["quote"] == ad.net.wrapped_native, p["quote_balance"]), reverse=True)
 
 
+VENUES_MAX = 3   # pools priced for the aggregate sell impact (each costs 2-3 eth_calls)
+
+
+def _venue(ad, token, p, circulating):
+    """impact.py venue for one V2 / V3 pool, or None (unreadable: the pool is left out, never guessed)."""
+    try:
+        if p["kind"] == "v2":
+            t0 = abi.addr(abi.words(ad.call(p["address"], SEL_TOKEN0))[0])
+            ws = abi.words(ad.call(p["address"], SEL_RESERVES))
+            reserve = abi.u256(ws[0] if t0 == token else ws[1])
+            return {"model": "constant_product", "reserve": reserve, "label": f"{p['dex']} V2 pair",
+                    "address": p["address"]} if reserve > 0 else None
+        curve = _v3_curve(ad, token, p, circulating)
+        return {"model": "quote_curve", "curve": curve, "label": f"{p['dex']} V3 pool (QuoterV2)",
+                "address": p["address"]} if curve else None
+    except Exception as e:
+        print(f"dex: pool {p['address']} not priced for {token}: {type(e).__name__}", flush=True)
+        return None
+
+
 def _v3_curve(ad, token, pool, circulating):
     """[(q, drop)] for selling q into a V3 pool: QuoterV2 sqrtPriceX96After vs slot0 (one multicall)."""
     t0 = abi.addr(abi.words(ad.call(pool["address"], SEL_TOKEN0))[0])
@@ -180,22 +200,19 @@ def liquidity(ad, token, launch, circulating, balances):
                             for p in ranked]
     if circulating <= 0:
         return {"reserve": 0, "reserve_ok": False}
-    if ranked and ranked[0]["kind"] == "v2":
-        p = ranked[0]
-        t0 = abi.addr(abi.words(ad.call(p["address"], SEL_TOKEN0))[0])
-        ws = abi.words(ad.call(p["address"], SEL_RESERVES))
-        reserve = abi.u256(ws[0] if t0 == token else ws[1])
-        launch["impact_pool"] = p["address"]
-        return {"reserve": reserve, "reserve_ok": reserve > 0}
     if ranked:
-        try:
-            curve = _v3_curve(ad, token, ranked[0], circulating)
-        except Exception as e:
-            print(f"dex: v3 quotes failed for {token}: {type(e).__name__}", flush=True)
-            curve = []
+        # the deepest pool prices the V1 score (unchanged); up to VENUES_MAX pools with liquidity are venues for the
+        # Phase 9 aggregate (a router splits a big sale across them)
+        venues = [v for v in (_venue(ad, token, p, circulating) for p in
+                              [ranked[0]] + [p for p in ranked[1:] if p.get("quote_balance")][:VENUES_MAX - 1]) if v]
         launch["impact_pool"] = ranked[0]["address"]
+        top = venues[0] if venues and venues[0]["address"] == ranked[0]["address"] else None
+        if ranked[0]["kind"] == "v2":
+            reserve = top["reserve"] if top else 0
+            return {"reserve": reserve, "reserve_ok": reserve > 0, "venues": venues}
+        curve = top["curve"] if top else []
         return {"reserve": max(0, balances.get(ranked[0]["address"], 0)), "reserve_ok": bool(curve),
-                "impact_curve": curve or None}
+                "impact_curve": curve or None, "venues": venues}
     v4p = [p for p in pools if p["kind"] == "v4"]
     if v4p:
         p = v4p[0]
@@ -208,7 +225,9 @@ def liquidity(ad, token, launch, circulating, balances):
             curve = []
         launch["impact_pool"] = p["pool_id"]
         return {"reserve": max(0, balances.get(ad.net.v4_pool_manager, 0)), "reserve_ok": bool(curve),
-                "impact_curve": curve or None}
+                "impact_curve": curve or None,
+                "venues": [{"model": "quote_curve", "curve": curve, "label": f"{p['dex']} V4 pool (V4Quoter)",
+                            "address": p["pool_id"]}] if curve else []}
     return {"reserve": 0, "reserve_ok": False}
 
 

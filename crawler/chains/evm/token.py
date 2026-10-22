@@ -16,7 +16,8 @@ unchanged; differences are only in how data is fetched, chosen per provider capa
 Plugin interface (module or object):
   NAME; detect(ad, token) → state | None (cheap, current state);
   launch(ad, token, state, first) → launch dict (block, tx, deployer, pair, market, infra, … plugin fields);
-  liquidity(ad, token, launch, circulating) → {"reserve", "reserve_ok", "impact_curve"?, "q_factor"?};
+  liquidity(ad, token, launch, circulating) → {"reserve", "reserve_ok", "impact_curve"?, "q_factor"?, "venues"?, "tax"?}
+      (venues — [{"model", "reserve" | "curve", "label", "address"}] for impact.py; tax — {"sell", "side", "source"});
   buy_quote(ad, token, logs, transfer, launch) → (is_buy, quote_in | None);
   info(ad, token, launch) → dict for the result (pool, fees, curve progress, …).
 """
@@ -482,7 +483,7 @@ class EvmTokenAdapter:
                  "base": None, "reserve": liq.get("reserve", 0), "reserve_ok": liq.get("reserve_ok", False),
                  "launchpad": self.plugin.NAME, self.plugin.NAME: self.plugin.info(self, token, launch),
                  "history_info": {k: v for k, v in hist.items() if k != "supply"}}
-        for k in ("impact_curve", "q_factor", "locked", "dev"):
+        for k in ("impact_curve", "q_factor", "locked", "dev", "venues", "tax"):
             if liq.get(k) is not None:
                 facts[k] = liq[k]
         return facts

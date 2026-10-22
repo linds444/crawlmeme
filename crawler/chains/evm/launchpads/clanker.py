@@ -113,7 +113,9 @@ def liquidity(ad, token, launch, circulating, balances):
             curve = v4.impact_curve(qs, v4.decode_try_aggregate(raw))
         except Exception as e:   # quotes unavailable: impact unknown, not zero
             print(f"clanker: quotes failed for {token} on {ad.CHAIN}: {type(e).__name__}", flush=True)
-    return {"reserve": reserve, "reserve_ok": bool(curve), "impact_curve": curve or None}
+    return {"reserve": reserve, "reserve_ok": bool(curve), "impact_curve": curve or None,
+            "venues": [{"model": "quote_curve", "curve": curve, "label": "Clanker v4 pool (V4Quoter)",
+                        "address": launch.get("pool_id")}] if curve else []}
 
 
 def buy_quote(ad, token, logs, t, launch):

@@ -1208,7 +1208,7 @@ rep("@media (max-width:640px){\n",
 # rug from the result: red dashed arrow from now to now × level_factor, label and reasons (parts).
 # ---------------------------------------------------------------------------
 CHART_JS = r"""// ---- price chart + probably rug (GET /api/chart after the verdict) ----
-const RUG_LABEL={linked:'linked wallets',transfer:'received by transfer',virgin:'fresh wallets',bundle:'bundle / snipers'};
+const RUG_LABEL={linked:'linked wallets',transfer:'received by transfer',virgin:'fresh wallets',bundle:'bundle / snipers',deployer:'deployer',crew:'crew from other tokens'};
 const MONO_F="'JetBrains Mono',monospace";
 const SUBD='₀₁₂₃₄₅₆₇₈₉';
 const escH=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1231,7 +1231,7 @@ function rugReasons(rug){
   return `<div data-rug-reasons="1" style="display:flex;flex-direction:column;gap:12px;padding:18px 20px 20px;border-top:1px solid #141b20">`
     +`<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 16px;font-family:${MONO_F};font-size:11px;color:#5f6b72"><span>why probably rug</span><span>suspicious supply · ${(rug.share*100).toFixed(1)}% of float</span></div>`
     +rows
-    +`<p style="margin:2px 0 0;font-size:14px;line-height:1.5;color:#8a959c;text-wrap:pretty">If these wallets sell into the current liquidity, the price could fall about ${dropPct(rug)}%.</p></div>`;
+    +`<p style="margin:2px 0 0;font-size:14px;line-height:1.5;color:#8a959c;text-wrap:pretty">A conditional scenario, not a prediction: if these wallets sell into the current liquidity${rug.aggregated?' (all priced pools together)':''}, the price could fall about ${dropPct(rug)}%.</p></div>`;
 }
 const SRC_LABEL={gt:'GeckoTerminal',dexscreener:'DexScreener'};
 const srcLabel=s=>SRC_LABEL[s]||'GeckoTerminal';
@@ -2547,6 +2547,57 @@ rep("  paintMemory(tries=0){", r"""  paintHealth(tries=0){   // verdict model an
       'The live model gives the verdict. Shadow models are scored on the same evidence and kept in memory, so they can be checked against what tokens actually did before one replaces it.'));
   }
   paintMemory(tries=0){""")
+
+# ---------------------------------------------------------------------------
+# Sell impact (Phase 9): what the price does if given holders sell into today's liquidity — scenarios (largest wallet,
+# largest linked operator, launch bundle, combined suspicious supply), the venues and the model each is priced with,
+# sell tax, depth (tokens to move the price 2 / 10 / 25 / 50%) and slippage for standard sizes.
+# ---------------------------------------------------------------------------
+rep('dhRef=React.createRef();', 'dhRef=React.createRef(); siRef=React.createRef();')
+rep('dhRef:this.dhRef', 'dhRef:this.dhRef, siRef:this.siRef')
+rep('this.paintMemory(); this.paintHealth();}', 'this.paintMemory(); this.paintHealth(); this.paintImpact();}')
+rep('        <div ref="{{dhRef}}" data-health="1" style="margin-top:56px"></div>\n\n',
+    '        <div ref="{{siRef}}" data-sell-impact="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{dhRef}}" data-health="1" style="margin-top:56px"></div>\n\n')
+rep("  paintHealth(tries=0){", r"""  paintImpact(tries=0){   // sell impact (Phase 9)
+    const m=this.m, el=this.siRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintImpact(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, si=raw.sell_impact;
+    if(!si) return;
+    const MONO="font-family:'JetBrains Mono',monospace";
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const pct=v=>v==null?'—':(v*100<0.1&&v>0?'<0.1':(v*100).toFixed(v*100>=10?0:1))+'%';
+    const usd=v=>{if(v==null||!isFinite(v)) return '—'; const a=Math.abs(v);
+      return '$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=1e3?(a/1e3).toFixed(1)+'k':a.toFixed(a>=10?0:2));};
+    const dc=v=>v==null?'#8a959c':v>=0.5?'#ff4d4d':v>=0.2?'#ffb020':'#00c805';
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','sell impact'),
+      mk('span',MONO+';font-size:12px;color:#8a959c',si.liquidity.measured?(si.liquidity.aggregated?si.liquidity.venues.length+' pools together':'1 pool')+(si.liquidity.exact?'':' · approximate'):'liquidity not measured'));
+    el.append(head);
+    const NAMES={largest_wallet:'largest wallet',largest_operator:'largest linked operator',launch_bundle:'launch bundle',suspicious_combined:'all suspicious supply'};
+    const tbl=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;overflow:hidden');
+    const row=(cells,hdr)=>{const r=mk('div','display:grid;grid-template-columns:minmax(0,1.6fr) repeat(4,minmax(0,1fr));gap:8px;padding:10px 14px;'+MONO+';font-size:'+(hdr?'11px;color:#5f6b72':'12.5px;color:#dfe5e8')+(hdr?'':';border-top:1px solid #141b20'));
+      cells.forEach(c=>r.append(typeof c==='string'?mk('span','overflow-wrap:anywhere',c):c)); return r;};
+    tbl.append(row(['if they sell','holds','price impact','avg slippage','proceeds'],true));
+    Object.keys(NAMES).forEach(k=>{const x=si.scenarios[k]; if(!x) return; const n=x.wallets.length;
+      const lab=mk('span','display:flex;flex-direction:column;gap:2px'); lab.append(mk('span','',NAMES[k]),mk('span','font-size:11px;color:#5f6b72',n+' wallet'+(n===1?'':'s')+(x.sellable_share<x.share-1e-9?' · '+pct(x.share-x.sellable_share)+' locked':'')));
+      tbl.append(row([lab, pct(x.share)+' of float', mk('span','color:'+dc(x.drop),x.drop==null?'—':(x.lower_bound?'≥ ':'')+'−'+pct(x.drop)), x.slippage==null?'—':pct(x.slippage), usd(x.proceeds_usd)]));});
+    el.append(tbl);
+    const facts=[];
+    facts.push(['priced with',si.liquidity.venues.length?si.liquidity.venues.map(v=>(v.label||v.model)+' · '+({constant_product:'x·y=k',bonding_curve:'curve x·y=k (virtual)',quote_curve:'on-chain quotes',approximate:'balance, approximate'}[v.model]||v.model)).join(' + '):'—']);
+    const t=si.tax;
+    facts.push(['sell tax',t?pct(t.sell)+(t.side==='quote'?' of proceeds':' of tokens sold')+' · '+({launchpad:'launchpad',token_2022:'Token-2022 transfer fee',observed:`seen in ${t.samples} sells (estimate)`}[t.source]||t.source||''):'none found']);
+    if(si.depth.length) facts.push(['depth',si.depth.map(x=>`−${Math.round(x.drop*100)}%: ${x.more_than?'> ':''}${pct(x.share)}${x.value_usd!=null?' ('+(x.more_than?'> ':'')+usd(x.value_usd)+')':''}`).join(' · ')]);
+    if(si.slippage.length) facts.push(['sell of float',si.slippage.map(x=>`${pct(x.share)} → −${pct(x.drop)}`).join(' · ')]);
+    const grid=mk('div','margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1px;border:1px solid #141b20;border-radius:12px;overflow:hidden;background:#141b20');
+    facts.forEach(([k,v])=>{const c=mk('div','background:#090c0f;padding:10px 14px;display:flex;flex-direction:column;gap:4px');
+      c.append(mk('span',MONO+';font-size:11px;color:#5f6b72',k),mk('span',MONO+';font-size:12.5px;color:#dfe5e8;overflow-wrap:anywhere',v)); grid.append(c);});
+    el.append(grid);
+    el.append(mk('p',MONO+';margin:10px 0 0;font-size:11.5px;line-height:1.6;color:#5f6b72',
+      'Conditional scenarios, not predictions: what the price would do if these wallets sold everything they can sell now into today\'s liquidity, split across the priced pools. Each wallet counts once per row; rows overlap. Depth is the share of float it takes to move the price that much.'));
+  }
+  paintHealth(tries=0){""")
 
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'

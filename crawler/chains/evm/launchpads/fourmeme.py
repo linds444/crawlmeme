@@ -91,7 +91,9 @@ def liquidity(ad, token, launch, circulating, balances):
         ws = abi.words(ad.call(pair, SEL_RESERVES))
         t0 = abi.addr(abi.words(ad.call(pair, SEL_TOKEN0))[0])
         reserve = abi.u256(ws[0] if t0 == token else ws[1])
-        return {"reserve": reserve, "reserve_ok": reserve > 0}
+        return {"reserve": reserve, "reserve_ok": reserve > 0,
+                "venues": [{"model": "constant_product", "reserve": reserve, "label": "PancakeSwap V2 pair",
+                            "address": pair}]}
     if circulating <= 0:
         return {"reserve": 0, "reserve_ok": False}
     qs = v4.sell_amounts(circulating)
@@ -104,7 +106,9 @@ def liquidity(ad, token, launch, circulating, balances):
         print(f"fourmeme: curve quotes failed for {token}: {type(e).__name__}", flush=True)
         curve = []
     reserve = max(0, balances.get(TOKEN_MANAGER2, 0))
-    return {"reserve": reserve, "reserve_ok": bool(curve), "impact_curve": curve or None}
+    return {"reserve": reserve, "reserve_ok": bool(curve), "impact_curve": curve or None,
+            "venues": [{"model": "quote_curve", "curve": curve, "label": "four.meme curve (trySell quotes)",
+                        "address": TOKEN_MANAGER2}] if curve else []}
 
 
 def buy_quote(ad, token, logs, t, launch):

@@ -22,6 +22,7 @@ from crawler import graph
 from crawler import cabals
 from crawler import memory_db
 from crawler import scoring
+from crawler import impact
 from crawler.chains.evm import funding as evm_funding
 from crawler import market
 BUDGET = 25.0          # seconds for the whole scan (README)
@@ -318,6 +319,34 @@ def scan_depth():
     except ValueError:
         return d.TOP_N
     return max(5, min(100, n))
+
+
+def sell_venues(facts, chain):
+    """impact.py venues from the adapter's facts["venues"]; adapters without them (Bankr) — the V1 inputs: a quote
+    curve when there is one, else the reserve as a constant-product pool."""
+    if facts.get("venues") is not None:
+        return [impact.venue(v["model"], v.get("reserve"), v.get("curve"), v.get("label"), v.get("address"))
+                for v in facts["venues"]]
+    if facts.get("impact_curve"):
+        return [impact.venue("quote_curve", curve=facts["impact_curve"], label=f"{facts.get('launchpad') or chain} "
+                             "pool (quoted)")]
+    if facts.get("reserve"):
+        return [impact.venue("constant_product", facts["reserve"], label="pool reserve")]
+    return []
+
+
+def sell_tax(facts, chain):
+    """Sell tax for impact.py: the adapter's (launchpad state, Token-2022 fee), else the V1 q_factor, else — EVM only —
+    what the scan's own sell transfers show (an estimate)."""
+    t = facts.get("tax")
+    if t:
+        return impact.tax(t["sell"], t.get("side", "token"), t.get("source"), t.get("exact", True), t.get("max_fee"))
+    if facts.get("q_factor", 1) < 1:
+        return impact.tax(1 - facts["q_factor"], "token", "launchpad")
+    if chain == "solana":
+        return None
+    return impact.observed_tax(facts.get("transfers") or [], set(facts.get("market") or ()),
+                               set(facts.get("excluded") or ()) - set(facts.get("market") or ()))
 
 
 def _reason(sc, base, n=d.TOP_N):
@@ -718,6 +747,7 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
             gt["liquidity_usd"] = fl["reserve_eth"] * usd
     if rug:
         rug["level_usd"] = gt["price_usd"] * rug["level_factor"] if gt.get("price_usd") else None
+    rug_v1 = rug
     meta = {}
     if not gt.get("name"):
         meta = a.token_meta(token)
@@ -740,6 +770,16 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     except Exception as e:
         print(f"graph: {token}: {type(e).__name__}: {e}", flush=True)
         rel = None
+
+    # sell impact (Phase 9): every scenario on every venue, with taxes; the «probably rug» marker comes from it
+    try:
+        si = impact.analyse(holders, sig, ops, base, sell_venues(facts, chain), reserve_ok, sell_tax(facts, chain),
+                            locked, mem, a.RUG_SNIPERS, gt.get("price_usd"),
+                            extras.get("decimals", 6 if chain == "solana" else 18))
+        rug = None if limited else impact.marker(si, sc["band"], sc["gates"], reserve_ok, limited)
+    except Exception as e:   # the V1 projection stays if the new block fails
+        print(f"impact: {token}: {type(e).__name__}: {e}", flush=True)
+        si, rug = None, rug_v1
 
     elapsed = round(time.time() - t0, 1)
     ev("done", reason, score=sc["score"], band=sc["band"], headline=sc["headline"], rug=rug)
@@ -765,7 +805,7 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
         "reserve": facts["reserve"],
         "reserve_ok": reserve_ok, "limited": limited, "market_source": gt.get("source"),
         "market_pool": gt.get("pool"),
-        "rug": rug, "partial_scan": partial_scan,
+        "rug": rug, "sell_impact": si, "partial_scan": partial_scan,
         "unread": unread, "use_funding": bool(funding_links() and funders),
         "elapsed_s": elapsed, "rpc_requests": a.REQUESTS[0] - r0,
         "model": {"id": live, "scores": models},

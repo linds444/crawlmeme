@@ -503,9 +503,16 @@ def token_facts(token, launch, deadline=None):
             "reserve_source": source, "q_factor": q_factor, "dev_buy": launch.get("dev_buy", 0),
             "locked": locked, "locked_share_supply": sum(locked.values()) / supply if supply else 0.0,
             "infra": sorted(own | {PORTAL}), "history": hist}
+    # Phase 9: the curve is x*y=k on virtual reserves, the graduated pair a Uniswap V2 pair; the sell tax is taken in
+    # tokens after graduation and in ETH on the curve
+    venue = ({"model": "constant_product", "reserve": max(0, reserve), "label": "Uniswap V2 pair", "address": pool}
+             if dex else {"model": "bonding_curve", "reserve": max(0, reserve), "label": "Flap curve (virtual reserves)",
+                          "address": PORTAL})
+    tax = ({"sell": st["sell_tax"] / 10_000, "side": "token" if dex else "quote", "source": "launchpad"}
+           if st["sell_tax"] else None)
     return {"supply": supply, "transfers": transfers, "excluded": excluded, "market": market,
             "reserve": max(0, reserve), "reserve_ok": reserve > 0, "base": base, "q_factor": q_factor,
-            "flap": info}
+            "flap": info, "venues": [venue], "tax": tax}
 
 
 def classify_entries(token, transfers, wallets, chunk=50):

@@ -94,7 +94,14 @@ def liquidity(ad, token, launch, circulating, balances):
         reserve = st["h"] + SUPPLY - st["circulating"]
     q_factor = 1.0 - st["sell_tax"] / 10_000 if dex else 1.0
     launch["_state"] = st
-    return {"reserve": max(0, reserve), "reserve_ok": reserve > 0, "q_factor": q_factor}
+    # sell tax: after graduation taken in tokens (q × (1 − t) reaches the pair), on the curve in the quote coin
+    tax = ({"sell": st["sell_tax"] / 10_000, "side": "token" if dex else "quote", "source": "launchpad"}
+           if st.get("sell_tax") else None)
+    venue = ({"model": "constant_product", "reserve": max(0, reserve), "label": "Flap pair", "address": st["main_pool"]}
+             if dex else {"model": "bonding_curve", "reserve": max(0, reserve), "label": "Flap curve (virtual reserves)",
+                          "address": PORTALS.get(ad.CHAIN)})
+    return {"reserve": max(0, reserve), "reserve_ok": reserve > 0, "q_factor": q_factor, "venues": [venue],
+            "tax": tax}
 
 
 def buy_quote(ad, token, logs, t, launch):

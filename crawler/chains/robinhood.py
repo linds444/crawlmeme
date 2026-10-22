@@ -347,11 +347,18 @@ def token_facts(token, launch):
     reserve_ok = False if neither the curve nor the pool manager holds the token (0): reserve not measured, rather than "no liquidity"."""
     transfers, supply = load_transfers(token, launch["block"])
     remember_scan(token, launch, transfers, supply)
-    pools = {launch["curve"].lower(), V4_POOL_MGR}
-    reserve = sum(t["amount"] * ((t["to"] in pools) - (t["frm"] in pools)) for t in transfers)
+    curve = launch["curve"].lower()
+    held = lambda a: max(0, sum(t["amount"] * ((t["to"] == a) - (t["frm"] == a)) for t in transfers))
+    on_curve, in_v4 = held(curve), held(V4_POOL_MGR)
+    reserve = on_curve + in_v4
+    # Phase 9 venues: the curve prices as x*y=k on its real token balance (virtual add-on on the quote side only);
+    # the V4 pool after migration is concentrated liquidity priced from the pool manager's balance — approximate
+    venues = ([{"model": "bonding_curve", "reserve": on_curve, "label": "Pons curve", "address": curve}]
+              if on_curve else []) + ([{"model": "approximate", "reserve": in_v4, "label": "Uniswap V4 pool (balance)",
+                                        "address": V4_POOL_MGR}] if in_v4 else [])
     return {"supply": supply, "transfers": transfers, "excluded": excluded_addresses(launch["curve"]),
-            "market": market_addresses(launch["curve"]), "reserve": max(0, reserve), "reserve_ok": reserve > 0,
-            "base": None}
+            "market": market_addresses(launch["curve"]), "reserve": reserve, "reserve_ok": reserve > 0,
+            "base": None, "venues": venues}
 
 
 # ---------------------------------------------------------------------------

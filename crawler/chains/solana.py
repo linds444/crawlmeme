@@ -412,6 +412,51 @@ def _parse_curve(data_b64):
             "creator": b58encode(b[49:81]) if len(b) >= 81 else None}
 
 
+TRANSFER_FEE_EXT = 1     # Token-2022 extension type TransferFeeConfig
+POOL_MODEL = {          # Phase 9: how each DEX's pools price a sale (impact.py); anything else is "approximate"
+    "PumpSwap": "constant_product", "Raydium AMM v4": "constant_product", "Raydium CPMM": "constant_product",
+    "Meteora DAMM": "constant_product",
+}
+
+
+def transfer_fee(mint_data_b64):
+    """Token-2022 TransferFeeConfig of a mint: {"bps", "max_fee"} (the newer fee: in force now or within two epochs),
+    or None (no extension / classic SPL mint). Layout: base mint 82 bytes, padding to 165, account type at 165, then
+    TLV (u16 type, u16 length); the extension holds two authorities (32 + 32), withheld u64, then the older and the
+    newer fee, each {epoch u64, maximum_fee u64, basis_points u16}."""
+    try:
+        b = base64.b64decode(mint_data_b64)
+    except (ValueError, TypeError):
+        return None
+    i = 166
+    while i + 4 <= len(b):
+        kind, ln = int.from_bytes(b[i:i + 2], "little"), int.from_bytes(b[i + 2:i + 4], "little")
+        body = b[i + 4:i + 4 + ln]
+        if kind == TRANSFER_FEE_EXT and len(body) >= 108:
+            newer = body[90:108]
+            return {"bps": int.from_bytes(newer[16:18], "little"), "max_fee": int.from_bytes(newer[8:16], "little")}
+        if kind == 0 and ln == 0:
+            break
+        i += 4 + ln
+    return None
+
+
+def pool_venues(rows, curve):
+    """impact.py venues after migration: the top accounts held by DEX pools, one venue per pool (owner)."""
+    by = {}
+    for r in rows:
+        if r["owner"] and r["owner"] != curve and is_pool_owner(r["owner"]):
+            by[r["owner"]] = by.get(r["owner"], 0) + r["amount"]
+    out = []
+    for owner, amount in sorted(by.items(), key=lambda kv: -kv[1]):
+        name = VAULT_AUTHORITIES.get(owner) or DEX.get(_OWNER_PROG.get(owner)) or "DEX"
+        model = POOL_MODEL.get(name, "approximate")
+        out.append({"model": model, "reserve": amount, "label": f"{name} pool" + ("" if model != "approximate"
+                                                                                  else " (balance)"),
+                    "address": owner})
+    return out
+
+
 def get_launch(token):
     """{"block" (slot), "curve", "deployer", "tx", "ts", "curve_account", "creator",
     "complete", "virtual_token_reserves", "token_program"} or None (not pump.fun).
@@ -454,7 +499,8 @@ def get_launch(token):
         res = {"block": tx["slot"], "curve": curve, "deployer": dev[0][1] if dev else creator,
                "tx": s["signature"], "ts": tx.get("blockTime") or s["blockTime"], "curve_account": curve_ata,
                "creator": creator, "complete": cs["complete"],
-               "virtual_token_reserves": cs["virtual_token_reserves"], "token_program": tprog}
+               "virtual_token_reserves": cs["virtual_token_reserves"], "token_program": tprog,
+               "transfer_fee": transfer_fee(mint_acc["data"][0]) if tprog == TOKEN_2022 else None}
         _LABEL[curve] = "bonding curve"
         _LAUNCH[token] = res
         return res
@@ -611,13 +657,20 @@ def token_facts(token, launch, deadline=None):
     if launch.get("complete"):
         reserve = sum(r["amount"] for r in rows if r["owner"] != launch["curve"] and is_pool_owner(r["owner"]))
         ok = reserve > 0
-    elif launch.get("virtual_token_reserves"):
-        reserve, ok = launch["virtual_token_reserves"], True
+        venues = pool_venues(rows, launch["curve"])
     else:
-        reserve, ok = sum(r["amount"] for r in rows if r["owner"] == launch["curve"]), True
+        if launch.get("virtual_token_reserves"):
+            reserve, ok = launch["virtual_token_reserves"], True
+        else:
+            reserve, ok = sum(r["amount"] for r in rows if r["owner"] == launch["curve"]), True
+        venues = [{"model": "bonding_curve", "reserve": reserve, "label": "pump.fun curve (virtual reserves)",
+                   "address": launch["curve"]}]
+    fee = launch.get("transfer_fee")
+    tax = ({"sell": fee["bps"] / 10_000, "side": "token", "source": "token_2022", "max_fee": fee["max_fee"]}
+           if fee and fee["bps"] else None)
     return {"supply": base["supply"], "transfers": transfers, "excluded": excluded_addresses(launch["curve"]),
             "market": market_addresses(launch["curve"]), "reserve": reserve, "reserve_ok": ok, "base": base,
-            "sampled": bool(sampled)}
+            "sampled": bool(sampled), "venues": venues, "tax": tax}
 
 
 def market_addresses(curve):

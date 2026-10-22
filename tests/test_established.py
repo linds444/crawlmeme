@@ -246,7 +246,8 @@ class TestLateAndLimited(unittest.TestCase):
 
         def facts(token, launch):
             f = real_facts(token, launch)
-            return f | {"reserve": 1, "reserve_ok": True}            # negligible reserve: impact ≈ 100%
+            # negligible reserve: impact ≈ 100% (venues None: the sell-impact block prices the same reserve)
+            return f | {"reserve": 1, "reserve_ok": True, "venues": None}
         def classify(token, trs, wallets):
             out = fakes.classify_entries(token, trs, wallets)
             for w in fakes.WALLETS[:5]:
