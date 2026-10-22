@@ -2327,10 +2327,12 @@ rep("  loadAll(tries=0){", r"""  paintForensics(tries=0){   // wallet forensics 
                 mk('span',MONO+';font-size:12px;color:#8a959c',fz.priced?'USD at candle prices · estimates':'no price history: amounts only'));
     el.append(head);
     const pct=v=>(v*100).toFixed(1)+'%';
-    (fz.common_funders||[]).forEach(g=>{
-      const n=mk('div',MONO+';margin-top:12px;padding:12px 14px;border:1px solid rgba(255,77,77,0.35);border-radius:10px;background:rgba(255,77,77,0.06);font-size:12.5px;color:#eef1f3;display:flex;flex-wrap:wrap;gap:6px;align-items:center');
-      n.append(mk('span','color:#ff4d4d','common funder'),addr(g.funder,'#ffd0d0'),
-               mk('span','',`funded ${g.wallets.length} of the top ${hs.length} · ${pct(g.share)} of float`+(g.is_holder?' · itself a holder':'')));
+    (fz.common_funders||[]).forEach(g=>{   // hub (exchange-like, 100+ outgoing): shown, never a link
+      const hub=g.hub===true, c=hub?'138,149,156':'255,77,77';
+      const n=mk('div',MONO+`;margin-top:12px;padding:12px 14px;border:1px solid rgba(${c},0.35);border-radius:10px;background:rgba(${c},0.06);font-size:12.5px;color:#eef1f3;display:flex;flex-wrap:wrap;gap:6px;align-items:center`);
+      n.append(mk('span','color:'+(hub?'#8a959c':'#ff4d4d'),hub?'hub funder':'common funder'),addr(g.funder,hub?'#c9d1d6':'#ffd0d0'),
+               mk('span','',`funded ${g.wallets.length} of the top ${hs.length} · ${pct(g.share)} of float`+(g.is_holder?' · itself a holder':'')
+                 +(hub?` · ${g.outgoing}+ outgoing transfers: exchange-like, not a link`:g.hub===false?' · linked as one operator':'')));
       el.append(n);});
     const grid='display:grid;grid-template-columns:40px minmax(90px,1fr) 70px 64px 80px 80px 80px 90px 60px minmax(120px,1.2fr);align-items:center;gap:8px;padding:9px 14px;';
     const box=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f;overflow-x:auto');
@@ -2346,7 +2348,7 @@ rep("  loadAll(tries=0){", r"""  paintForensics(tries=0){   // wallet forensics 
       else if(!fu.found) fcell.append(mk('span','color:#8a959c','no direct deposit'));
       else{fcell.append(addr(fu.funder,'#9fd9ff'));
         if(hset.has(fu.funder)) fcell.append(mk('span','color:#ffb020;font-size:11px','a holder'));
-        if(fu.shared_with) fcell.append(mk('span','color:#ff4d4d;font-size:11px','+'+fu.shared_with+' same'));}
+        if(fu.shared_with) fcell.append(mk('span','color:'+(fu.hub?'#8a959c':'#ff4d4d')+';font-size:11px',fu.hub?'hub':'+'+fu.shared_with+' same'));}
       r.append(mk('span','color:#5f6b72','#'+(i+1)),addr(h.wallet,'#dfe5e8'),mk('span','color:#8a959c',f.entry||'—'),
                mk('span','',held(f.hold_h)),mk('span','',usd(f.cost_usd)),mk('span','',usd(f.proceeds_usd)),
                mk('span','',f.exited?'exited':usd(f.holding_usd)),pnl,
@@ -2358,6 +2360,84 @@ rep("  loadAll(tries=0){", r"""  paintForensics(tries=0){   // wallet forensics 
       +'Funded by: the wallet\'s first native-coin deposit before it bought. Evidence only — not part of the score yet.'));
   }
   loadAll(tries=0){""")
+
+# ---------------------------------------------------------------------------
+# Relationship graph (Phase 6): holders, funders and distributors with the evidence edges between them
+# (result.graph), laid out by a small force simulation in an SVG — no library. Hub funders are drawn grey with
+# dashed edges: shown, never linking. Click a node: explorer (or copy the address where the chain has none).
+# ---------------------------------------------------------------------------
+rep('fzRef=React.createRef();', 'fzRef=React.createRef(); grRef=React.createRef();')
+rep('fzRef:this.fzRef', 'fzRef:this.fzRef, grRef:this.grRef')
+rep('this.loadAll(); this.paintForensics();}', 'this.loadAll(); this.paintForensics(); this.paintGraph();}')
+rep('        <div ref="{{fzRef}}" data-forensics="1" style="margin-top:56px"></div>',
+    '        <div ref="{{grRef}}" data-graph="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{fzRef}}" data-forensics="1" style="margin-top:56px"></div>')
+rep("  paintForensics(tries=0){", r"""  paintGraph(tries=0){   // relationship graph (Phase 6)
+    const m=this.m, el=this.grRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintGraph(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, g=raw.graph;
+    if(!g||!g.nodes||!g.nodes.length) return;
+    const NS='http://www.w3.org/2000/svg', MONO="font-family:'JetBrains Mono',monospace", ex=EXPLORER[chainOf(m.ca)];
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const sv=(tag,at)=>{const e=document.createElementNS(NS,tag); for(const k in at) e.setAttribute(k,at[k]); return e;};
+    const st=g.stats||{}, pct=v=>(v*100).toFixed(1)+'%';
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','relationship graph'),
+      mk('span',MONO+';font-size:12px;color:#8a959c',`${st.links||0} links · ${st.operators_merged||0} operators merged`
+        +(st.operators_merged?` (largest ${pct(st.largest_operator_share||0)} of float)`:'')+(st.hubs?` · ${st.hubs} hub funder${st.hubs>1?'s':''} (not linking)`:'')));
+    el.append(head);
+    const W=900, H=Math.max(360,Math.min(620,180+g.nodes.length*9)), cx=W/2, cy=H/2;
+    const OPC=['#ff4d4d','#ffb020','#b07bff','#19d3ff','#21e6a0','#ff5ad1','#ff7a1a','#9fd9ff'];
+    const N=g.nodes.map((n,i)=>{const a=i/g.nodes.length*Math.PI*2, r=n.type==='holder'?Math.min(W,H)*0.28:Math.min(W,H)*0.42;
+      return Object.assign({x:cx+Math.cos(a)*r,y:cy+Math.sin(a)*r,vx:0,vy:0,
+        R:n.type==='holder'?6+Math.sqrt(n.share||0)*46:n.type==='funder'?7:6},n);});
+    const idx={}; N.forEach((n,i)=>idx[n.id]=i);
+    const E=(g.edges||[]).filter(e=>idx[e.a]!=null&&idx[e.b]!=null);
+    for(let it=0;it<320;it++){   // force layout: repulsion, springs along edges, gravity; cooled over the iterations
+      const k=1-it/320;
+      for(let i=0;i<N.length;i++) for(let j=i+1;j<N.length;j++){const a=N[i],b=N[j]; let dx=a.x-b.x, dy=a.y-b.y, d2=dx*dx+dy*dy+0.01;
+        const f=Math.min(8,1800/d2), d=Math.sqrt(d2); dx/=d; dy/=d; a.vx+=dx*f; a.vy+=dy*f; b.vx-=dx*f; b.vy-=dy*f;}
+      E.forEach(e=>{const a=N[idx[e.a]], b=N[idx[e.b]], dx=b.x-a.x, dy=b.y-a.y, d=Math.sqrt(dx*dx+dy*dy)||1,
+        L=e.kind==='funding'||e.kind==='sent_token'?70:55, f=(d-L)*0.02*(e.confidence||0.5); a.vx+=dx/d*f; a.vy+=dy/d*f; b.vx-=dx/d*f; b.vy-=dy/d*f;});
+      N.forEach(n=>{n.vx+=(cx-n.x)*0.004; n.vy+=(cy-n.y)*0.004; n.x+=n.vx*k; n.y+=n.vy*k; n.vx*=0.6; n.vy*=0.6;
+        n.x=Math.max(n.R+4,Math.min(W-n.R-4,n.x)); n.y=Math.max(n.R+4,Math.min(H-n.R-4,n.y));});
+    }
+    const svg=sv('svg',{viewBox:`0 0 ${W} ${H}`,width:'100%',role:'img','aria-label':'relationship graph of the top holders'});
+    svg.style.cssText='display:block;margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f';
+    const hubOf=id=>{const n=N[idx[id]]; return n&&n.hub;};
+    const EC={same_tx:'#ff4d4d',direct:'#ff4d4d',funded:'#ff4d4d',funder:'#ff4d4d',distributor:'#ffb020',sent_token:'#ffb020',pack:'#ffd23f'};
+    E.forEach(e=>{const a=N[idx[e.a]], b=N[idx[e.b]], hub=e.kind==='funding'&&hubOf(e.a);
+      const col=e.kind==='funding'?(hub?'#3a454c':'#ff4d4d'):(EC[e.kind]||'#8a959c');
+      const ln=sv('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:col,'stroke-width':e.level==='proven'?2:1.2,'stroke-opacity':hub?0.6:0.85});
+      if(hub||e.kind==='pack'||e.kind==='funding') ln.setAttribute('stroke-dasharray',hub?'3 4':'6 4');
+      const t=sv('title',{}); t.textContent=`${e.kind}${e.tx?' · tx '+e.tx:''}${e.block!=null?' · block '+e.block:''} · confidence ${e.confidence}`; ln.append(t);
+      svg.append(ln);});
+    N.forEach(n=>{let sh;
+      if(n.type==='holder'){const col=n.operator!=null?OPC[n.operator%OPC.length]:'#5f6b72';
+        sh=sv('circle',{cx:n.x,cy:n.y,r:n.R,fill:n.operator!=null?col:'#141b20',stroke:col,'stroke-width':1.5,'fill-opacity':n.operator!=null?0.35:1});}
+      else if(n.type==='funder'){const s=n.R; sh=sv('rect',{x:n.x-s,y:n.y-s,width:2*s,height:2*s,transform:`rotate(45 ${n.x} ${n.y})`,
+        fill:n.hub?'#1c252b':'#3a0d0d',stroke:n.hub?'#5f6b72':'#ff4d4d','stroke-width':1.5});}
+      else sh=sv('polygon',{points:`${n.x},${n.y-7} ${n.x+7},${n.y+6} ${n.x-7},${n.y+6}`,fill:'#3a2a05',stroke:'#ffb020','stroke-width':1.5});
+      sh.style.cursor='pointer';
+      const t=sv('title',{}); t.textContent=n.type==='holder'?`#${n.rank} ${n.id} · ${pct(n.share)} of float`+(n.operator!=null?` · operator ${n.operator+1}`:'')
+        :n.type==='funder'?`funder ${n.id} · funded ${n.funds} holder${n.funds>1?'s':''}`+(n.outgoing!=null?` · ${n.outgoing}${n.hub?'+':''} outgoing`:'')+(n.hub?' · hub: never links':' · links its holders')
+        :`distributor ${n.id} · sent the token to ${n.holders} holders`;
+      sh.append(t);
+      sh.addEventListener('click',()=>{if(ex) window.open(ex.account(n.id),'_blank','noopener'); else try{navigator.clipboard.writeText(n.id);}catch(e){}});
+      svg.append(sh);
+      if(n.type==='holder'&&n.rank<=20){const tx=sv('text',{x:n.x,y:n.y+3.5,'text-anchor':'middle','font-size':n.R>12?10:8,fill:'#eef1f3','pointer-events':'none'});
+        tx.style.fontFamily="'JetBrains Mono',monospace"; tx.textContent=n.rank; svg.append(tx);}
+    });
+    el.append(svg);
+    const leg=mk('div',MONO+';display:flex;flex-wrap:wrap;gap:16px;margin-top:10px;font-size:11.5px;color:#8a959c');
+    [['●','#9fd9ff','holder (size = share; colour = merged operator)'],['◆','#ff4d4d','funder linking its holders'],['◆','#5f6b72','hub funder (exchange-like): shown, never links'],
+     ['▲','#ffb020','token distributor'],['━','#ff4d4d','proven link'],['┅','#ffd23f','same-block pack']].forEach(([s,c,t])=>{const i=mk('span','');
+      i.append(mk('span','color:'+c,s+' '),document.createTextNode(t)); leg.append(i);});
+    el.append(leg);
+    if(!st.links) el.append(mk('p',MONO+';margin:8px 0 0;font-size:11.5px;color:#5f6b72','No links between the top holders: every holder counts as its own operator.'));
+  }
+  paintForensics(tries=0){""")
 
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'

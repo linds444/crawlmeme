@@ -772,10 +772,11 @@ DEX_SOURCES = {"PUMP_FUN", "PUMP_AMM", "RAYDIUM", "JUPITER", "ORCA", "METEORA", 
 
 
 def enhanced_before(wallet, before_sig):
-    """Helius parsed transactions of wallet strictly before before_sig, newest first: (txs, complete) — complete when
-    the page holds the wallet's whole history before that point. None — no Helius key or the call failed.
+    """Helius parsed transactions of wallet strictly before before_sig (None: its latest), newest first:
+    (txs, complete) — complete when the page holds the wallet's whole history before that point.
+    None — no Helius key or the call failed.
     One fetch per (wallet, before_sig) per process: a second caller waits for the first instead of fetching again."""
-    if not HELIUS_KEY or not before_sig:
+    if not HELIUS_KEY:
         return None
     key = (wallet, before_sig)
     with _ENH_LOCK:
@@ -791,7 +792,8 @@ def enhanced_before(wallet, before_sig):
             return _ENH.get(key)
     res = None
     try:
-        q = urllib.parse.urlencode({"api-key": HELIUS_KEY, "limit": ENHANCED_LIMIT, "before": before_sig})
+        q = urllib.parse.urlencode({"api-key": HELIUS_KEY, "limit": ENHANCED_LIMIT}
+                                   | ({"before": before_sig} if before_sig else {}))
         url = ENHANCED_URL.format(addr=urllib.parse.quote(wallet, safe="")) + "?" + q
         for a in range(3):
             priority.rate_limit(_ENH_LIMIT, _BG_LIMIT)
@@ -854,7 +856,8 @@ def first_funder(wallet, before_block):
     """First SOL deposit into wallet before its entry, from Helius parsed history:
     {"funder", "found", "block" (slot), "tx", "amount" (SOL)}; None — unknown (no key, no entry signature, or the
     wallet's pre-entry history is longer than one page, so its first deposit was not read)."""
-    page = enhanced_before(wallet, _ENTRY_SIG.get((wallet, before_block)))
+    entry = _ENTRY_SIG.get((wallet, before_block))
+    page = enhanced_before(wallet, entry) if entry else None
     if page is None or not page[1]:
         return None
     for tx in reversed(page[0]):                 # oldest first
@@ -928,7 +931,18 @@ def eth_inflows(wallet, before_block, max_count=1000):
 
 
 def outgoing_count(addr, cap=100):
-    raise NotImplementedError("funding is off on Solana (USE_FUNDING = False)")
+    """SOL transfers addr has sent, from its latest page of parsed history: the hub check for a funder.
+    A full page (ENHANCED_LIMIT transactions) is too active to judge from one page: cap, i.e. treated as a hub.
+    None — unreadable (treated as a hub as well)."""
+    page = enhanced_before(addr, None)
+    if page is None:
+        return None
+    txs, complete = page
+    if not complete:
+        return cap
+    n = sum(1 for tx in txs if not tx.get("transactionError") for t in tx.get("nativeTransfers") or []
+            if t.get("fromUserAccount") == addr and t.get("toUserAccount") not in (None, addr) and t.get("amount"))
+    return min(n, cap)
 
 
 def _borsh_str(b, i):

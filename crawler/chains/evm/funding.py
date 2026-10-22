@@ -27,3 +27,17 @@ def first_funder(client, wallet, before_block):
     return {"funder": (r.get("from") or "").lower() or None, "found": bool(r.get("from")),
             "block": int(r["blockNum"], 16), "tx": r.get("hash"),
             "amount": float(r["value"]) if r.get("value") is not None else None}
+
+
+def outgoing_count(client, addr, cap):
+    """How many native-coin transfers addr has sent (external), counted up to cap: the hub check for a funder
+    (detect.HUB_MIN_OUT: an exchange hot wallet or a bot sends thousands and must never link the wallets it funded).
+    None — unreadable (the caller then treats the address as a hub: no data, no link)."""
+    if not available(client):
+        return None
+    try:
+        rows, more = client.asset_transfers(max_count=cap, fromAddress=addr, fromBlock=0, category=["external"],
+                                            excludeZeroValue=True)
+    except (NoProvider, RpcError):
+        return None
+    return cap if more else len(rows)

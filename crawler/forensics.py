@@ -125,10 +125,11 @@ def wallet_pnl(f, balance, clock, price_at, price_now, decimals, now):
     return out
 
 
-def funding_groups(funders, share, ratio, holders):
+def funding_groups(funders, share, ratio, holders, funder_out=None, hub_min=None):
     """Funding facts over the analysed holders. funders: {wallet: {"funder", "found", ...} | None}.
     common — funders that funded 2+ holders (could be the dev, a sniper crew's hub or an exchange hot wallet:
-    the scan does not label exchanges), with their wallets' combined share of float and of supply;
+    the scan does not label exchanges), with their wallets' combined share of float and of supply; outgoing / hub —
+    the funder's outgoing native transfers (Phase 6 hub check: hub True never links, None = not checked);
     by_holder — holders whose first deposit came from another analysed holder."""
     hset = set(holders)
     groups = {}
@@ -139,8 +140,10 @@ def funding_groups(funders, share, ratio, holders):
     for funder, ws in groups.items():
         if len(ws) >= 2:
             s = sum(share.get(w, 0.0) for w in ws)
+            n = (funder_out or {}).get(funder)
             common.append({"funder": funder, "wallets": sorted(ws, key=lambda w: -share.get(w, 0.0)),
-                           "share": s, "share_supply": s * ratio, "is_holder": funder in hset})
+                           "share": s, "share_supply": s * ratio, "is_holder": funder in hset, "outgoing": n,
+                           "hub": None if n is None or hub_min is None else n >= hub_min})
     common.sort(key=lambda g: -g["share"])
     by_holder = [{"wallet": w, "funder": f["funder"]} for w, f in funders.items()
                  if f and f.get("found") and f.get("funder") in hset and f["funder"] != w]
@@ -148,7 +151,7 @@ def funding_groups(funders, share, ratio, holders):
 
 
 def build(transfers, holders, market, burn, balances, share, ratio, clock, candles, price_now, decimals, now,
-          funders, entries):
+          funders, entries, funder_out=None, hub_min=None):
     """result["forensics"]: {"version", "priced", "price_points", "decimals", "wallets": {w: {...}}, "common_funders",
     "funded_by_holder", "funding_read"}. holders — analysed wallets, largest first."""
     price_at = price_lookup(candles)
@@ -160,10 +163,11 @@ def build(transfers, holders, market, burn, balances, share, ratio, clock, candl
         f = funders.get(w)
         rec["funding"] = None if f is None else {k: f.get(k) for k in ("funder", "found", "block", "tx", "amount")}
         wallets[w] = rec
-    common, by_holder = funding_groups(funders, share, ratio, holders)
+    common, by_holder = funding_groups(funders, share, ratio, holders, funder_out, hub_min)
     for g in common:
         for w in g["wallets"]:
             wallets[w]["funding"]["shared_with"] = len(g["wallets"]) - 1
+            wallets[w]["funding"]["hub"] = g["hub"]
     return {"version": VERSION, "priced": bool(candles) and price_now is not None,
             "price_points": len(candles or []), "decimals": decimals, "wallets": wallets,
             "common_funders": common, "funded_by_holder": by_holder,

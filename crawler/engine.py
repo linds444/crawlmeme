@@ -18,6 +18,7 @@ from crawler.chains import solana as sol
 from crawler import detect as d
 from crawler import coverage
 from crawler import forensics
+from crawler import graph
 from crawler.chains.evm import funding as evm_funding
 from crawler import market
 BUDGET = 25.0          # seconds for the whole scan (README)
@@ -34,7 +35,8 @@ WORKERS = 12           # threads reading wallet history; the RPS limiter in the 
 # go first; without the attribute -- all WORKERS at once, as before
 SPIDERS = 6            # spiders; wallets are dealt round-robin
 HIST_CAP = d.SHORT_HISTORY_MAX + 1  # count coins before entry up to 4: what matters is 0 / 1..3 / more
-USE_FUNDING = False    # funding disabled: eth_inflows/outgoing_count are not called,
+USE_FUNDING = False    # V1 funding path (robinhood eth_inflows/outgoing_count) stays off; Phase 6 funding links come from
+                       # Phase 5 forensics instead (FUNDING_LINKS below),
                        # the "common funder" link and the one_shot_funded signal are disabled
 
 ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -257,6 +259,23 @@ class _RankGate:
 _HIST, _HIST_LOCK = {}, threading.Lock()  # (wallet, before_block) -> coins before entry
 
 FUNDING_WORKERS = 4     # funding-source lookups in flight (one Transfers API / parsed-history call each)
+
+
+def funding_links():
+    """FUNDING_LINKS (default on): holders whose first deposit came from one non-hub funder are linked
+    (detect.find_links kind "funder"), and a holder funded by another holder is linked to it (kind "funded")."""
+    return (os.environ.get("FUNDING_LINKS") or "on").strip().lower() not in ("0", "off", "false", "no")
+
+
+def _hub_counter(chain):
+    """(address, cap) → outgoing native transfers up to cap, for the funder hub check; None when unavailable."""
+    if chain == "solana":
+        return sol.outgoing_count
+    try:
+        client = evm_networks.client(chain)
+    except Exception:
+        return None
+    return lambda addr, cap: evm_funding.outgoing_count(client, addr, cap)
 
 
 def _funding_reader(chain):
@@ -513,6 +532,27 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     fex = ThreadPoolExecutor(max_workers=FUNDING_WORKERS,
                              thread_name_prefix=f"{priority.BG}-fund" if priority.is_background() else "fund")
     ffuts = {fex.submit(priority.run_scoped, sc, fund, w, entries[w]["block"]): w for w in order} if fund else {}
+    # hub check as soon as a funder matters for links: it funded a second holder, or it is a holder itself
+    hub_count = _hub_counter(chain) if funding_links() else None
+    fund_lock, by_funder, hub_futs, hset0 = threading.Lock(), {}, {}, set(hs)
+
+    def on_funded(fut, w):
+        try:
+            f = fut.result()
+        except BaseException:
+            return
+        if hub_count is None or not f or not f.get("found") or not f.get("funder"):
+            return
+        with fund_lock:
+            ws = by_funder.setdefault(f["funder"], set())
+            ws.add(w)
+            if (len(ws) >= 2 or f["funder"] in hset0) and f["funder"] not in hub_futs:
+                try:
+                    hub_futs[f["funder"]] = fex.submit(priority.run_scoped, sc, hub_count, f["funder"], d.HUB_MIN_OUT)
+                except RuntimeError:   # pool already shut down: no hub data, no link
+                    pass
+    for fu, w in ffuts.items():
+        fu.add_done_callback(lambda x, w=w: on_funded(x, w))
 
     def flag(w):
         s = d.wallet_signals({w: data[w]}, ts[launch["block"]], launch["deployer"],
@@ -547,6 +587,17 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
                 pass
     except _CFTimeout:
         pass
+    with fund_lock:
+        hubs_pending = dict(hub_futs)
+    try:
+        for _ in as_completed(list(hubs_pending.values()), timeout=max(0.05, crawl_deadline - time.time())):
+            pass
+    except _CFTimeout:
+        pass
+    funder_out = {}   # funder → outgoing native transfers (absent: unknown, treated as a hub)
+    for funder, fu in hubs_pending.items():
+        if fu.done() and not fu.cancelled() and fu.exception() is None and fu.result() is not None:
+            funder_out[funder] = fu.result()
     sc.cancel()
     gate.close()
     ex.shutdown(wait=False, cancel_futures=True)
@@ -564,10 +615,19 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
         if t["to"] in hset and t["frm"] not in hset and t["frm"] not in excluded:
             by_src.setdefault(t["frm"], set()).add(t["to"])
     cand = {a for a, ws in by_src.items() if len(ws) > 1}
-    contracts = {x for x, c in a.is_contract(cand).items() if c} if cand else set()
+    fcand = set(funder_out)                       # funders that may link (hub-checked)
+    contracts = {x for x, c in a.is_contract(cand | fcand).items() if c} if cand | fcand else set()
     # without funding we do not know outgoing ETH: a distributor wallet (not a contract) is not considered a hub
     outgoing = {a: 0 for a in cand - contracts}
-    links = d.find_links(hs, transfers, sig, {}, outgoing, contracts, excluded, packs)
+    outgoing.update(funder_out)                  # funders: their measured outgoing count decides hub or not
+    inflows = ({w: [{"from": f["funder"], "tx": f.get("tx")}] for w, f in funders.items()
+                if f and f.get("found") and f.get("funder")} if funding_links() else {})
+    links = d.find_links(hs, transfers, sig, inflows, outgoing, contracts, excluded, packs)
+    # a holder whose first deposit came from another holder (not a hub, not a contract): one operator
+    for w, srcs in inflows.items():
+        f = srcs[0]["from"]
+        if f in hset and f != w and f not in contracts and outgoing.get(f, d.HUB_MIN_OUT) < d.HUB_MIN_OUT:
+            links.append({"a": f, "b": w, "kind": "funded", "level": "proven", "via": srcs[0]["tx"]})
     ops = d.operators(holders, links, packs, ratio)
     for l in links:
         ev("link", l["kind"], wallet=l["a"], b=l["b"], level=l["level"], kind=l["kind"], via=l["via"])
@@ -642,15 +702,21 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     # wallet forensics (estimates, never part of the score): trades, P&L at candle prices, hold time, funding
     xt.join(timeout=max(0.0, min(2.0, deadline + 2.0 - time.time())))
     chart = extras.get("chart") or {}
-    anchors = list(ts.items())   # launch + entry times the scan already read: no extra request
+    clock = forensics.make_clock(list(ts.items()))   # launch + entry times the scan already read: no extra request
     try:
         fz = forensics.build(transfers, hs, mkt, excluded, base["balances"], share, ratio,
-                             forensics.make_clock(anchors), chart.get("candles"),
+                             clock, chart.get("candles"),
                              chart.get("price_usd") or gt.get("price_usd"),
-                             extras.get("decimals", 6 if chain == "solana" else 18), time.time(), funders, entries)
+                             extras.get("decimals", 6 if chain == "solana" else 18), time.time(), funders, entries,
+                             funder_out, d.HUB_MIN_OUT)
     except Exception as e:   # evidence only: a failure here never costs the verdict
         print(f"forensics: {token}: {type(e).__name__}: {e}", flush=True)
         fz = None
+    try:   # relationship graph (Phase 6): the evidence behind every link, for the page and the memory brain
+        rel = graph.build(chain, holders, sig, links, packs, ops, funders, funder_out, contracts, d.HUB_MIN_OUT, clock)
+    except Exception as e:
+        print(f"graph: {token}: {type(e).__name__}: {e}", flush=True)
+        rel = None
 
     elapsed = round(time.time() - t0, 1)
     ev("done", reason, score=sc["score"], band=sc["band"], headline=sc["headline"], rug=rug)
@@ -670,13 +736,13 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
                      "forensics": (fz or {}).get("wallets", {}).get(a),
                      "signals": sig[a]} for a, _, s in holders],
         "forensics": None if fz is None else {k: v for k, v in fz.items() if k != "wallets"},
-        "links": links, "packs": packs, "operators": ops,
+        "links": links, "packs": packs, "operators": ops, "graph": rel,
         "score": sc["score"], "band": sc["band"], "parts": sc["parts"], "gates": sc["gates"],
         "metrics": sc["metrics"], "headline": sc["headline"], "reason": reason, "notes": sc.get("notes", []),
         "reserve": facts["reserve"],
         "reserve_ok": reserve_ok, "limited": limited, "market_source": gt.get("source"),
         "market_pool": gt.get("pool"),
         "rug": rug, "partial_scan": partial_scan,
-        "unread": unread, "use_funding": USE_FUNDING,
+        "unread": unread, "use_funding": bool(funding_links() and funders),
         "elapsed_s": elapsed, "rpc_requests": a.REQUESTS[0] - r0,
     }
