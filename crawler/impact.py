@@ -243,10 +243,11 @@ def _sellable(q, wallets, locked):
     return max(0, q - sum((locked or {}).get(w, 0) for w in wallets)) if locked else q
 
 
-def _scenario(kind, wallets, bal, ctx, parts=None):
-    if not wallets:
+def _scenario(kind, wallets, bal, ctx, parts=None, q=None):
+    if not wallets and not q:
         return None
-    q = sum(bal[w] for w in wallets)
+    if q is None:
+        q = sum(bal[w] for w in wallets)
     circ, ratio = ctx["circulating"], ctx["ratio"]
     sell = _sellable(q, wallets, ctx["locked"])
     into = net_into_pool(sell, ctx["tax"])
@@ -273,7 +274,7 @@ def _scenario(kind, wallets, bal, ctx, parts=None):
 
 
 def analyse(holders, signals, ops, base, venues, venues_ok, tax_info=None, locked=None, memory=None,
-            snipers=True, price_usd=None, decimals=18):
+            snipers=True, price_usd=None, decimals=18, extra=None):
     """result["sell_impact"]. holders — [(wallet, balance raw, share of circulating)] analysed, largest first;
     venues — [venue(...)]; venues_ok — the liquidity is reliably measured (engine reserve_ok)."""
     circ = base["circulating"]
@@ -315,6 +316,8 @@ def analyse(holders, signals, ops, base, venues, venues_ok, tax_info=None, locke
     order = {w: i for i, (w, _, _) in enumerate(holders)}
     sc["suspicious_combined"] = _scenario("suspicious_combined", sorted(taken, key=order.get), bal, ctx, parts)
 
+    for kind, (ws, q) in (extra or {}).items():   # e.g. bundle_traced (Phase 10): supply traced beyond the top
+        sc[kind] = _scenario(kind, list(ws), bal, ctx, q=q)
     live = [v for v in venues if (v.get("reserve") or 0) > 0 or v.get("curve")]
     depth, slip = [], []
     if ctx["venues_ok"]:

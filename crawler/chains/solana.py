@@ -1059,6 +1059,34 @@ def early_buyers(token, n=20, deadline=None):
                        "curve": launch["curve"]}, "buyers": buyers, "txs_read": pos}
 
 
+BUNDLE_TX_MAX = 60   # Phase 10: launch-window transactions read (one batch; most are already cached by get_launch)
+
+
+def launch_participants(token, launch, window=BUNDLE_WINDOW):
+    """Phase 10 launch participants from the curve's transactions in slots launch … launch + window:
+    {owner: {"kind", "block", "tx", "acquired"}}. Balance changes per transaction (pre/post token balances), non-PDA
+    owners other than the curve; kind — "deployer" for the deployer, "buy" in a transaction with a DEX program, else
+    "transfer". {} — launch signatures unknown (get_launch was not run in this process)."""
+    sigs = [x for x in _LAUNCH_SIGS.get(token) or [] if x.get("slot") is not None
+            and launch["block"] <= x["slot"] <= launch["block"] + window][:BUNDLE_TX_MAX]
+    if not sigs:
+        return {}
+    txs = get_transactions([x["signature"] for x in sigs])
+    out = {}
+    for x in sigs:
+        tx = txs.get(x["signature"])
+        if not tx:
+            continue
+        trade = is_trade(tx)
+        for o, v in token_deltas(tx, token).items():
+            if v <= 0 or o == launch["curve"] or is_pda(o) or o in INFRA:
+                continue
+            kind = "deployer" if o == launch.get("deployer") else "buy" if trade else "transfer"
+            p = out.setdefault(o, {"kind": kind, "block": tx["slot"], "tx": x["signature"], "acquired": 0})
+            p["acquired"] += v
+    return out
+
+
 def early_status(token, buyers, deadline=None, launch=None, out_cap=EARLY_OUT_CAP):
     """What buyers did with the token: {"supply", "wallets": {wallet: {"now", "sold", "moved": {to: amount},
     "burned", "partial"}}}. now — balance of the entry token account (closed — 0; one getMultipleAccounts).

@@ -23,6 +23,7 @@ from crawler import cabals
 from crawler import memory_db
 from crawler import scoring
 from crawler import impact
+from crawler import bundles
 from crawler.chains.evm import funding as evm_funding
 from crawler import market
 BUDGET = 25.0          # seconds for the whole scan (README)
@@ -333,6 +334,38 @@ def sell_venues(facts, chain):
     if facts.get("reserve"):
         return [impact.venue("constant_product", facts["reserve"], label="pool reserve")]
     return []
+
+
+BUNDLE_SOLANA_MIN_S = 2.0   # Solana reads the launch transactions only with this much scan time left
+
+
+def launch_bundle(a, chain, token, facts, launch, base, holders, entries, cov, partial, clock, funders, funder_out,
+                  deadline):
+    """result["bundle"]: EVM — traced from the scan's own transfer history (no request); Solana — the launch
+    transactions' balance changes (cached by get_launch, at most one batch) and the complete holder list."""
+    if chain == "solana":
+        if not hasattr(a, "launch_participants") or deadline - time.time() < BUNDLE_SOLANA_MIN_S:
+            return None
+        parts = a.launch_participants(token, launch, a.BUNDLE_WINDOW)
+        return bundles.analyse_solana(parts, base["balances"], facts["supply"], base["circulating"], holders,
+                                      entries)
+    market = set(facts["market"])
+    sinks = (set(facts["excluded"]) - market) | bundles.BURNS
+    trs = facts["transfers"]
+    if any(trs[i]["block"] > trs[i + 1]["block"] for i in range(len(trs) - 1)):
+        trs = sorted(trs, key=lambda t: (t["block"], t.get("log_index", 0)))
+    complete = cov["holders"]["method"] == "full_history" and not partial
+    return bundles.analyse(trs, launch, a.BUNDLE_WINDOW, market, sinks, sinks - bundles.BURNS, facts["supply"],
+                           base["circulating"], holders, complete, clock, a.RUG_SNIPERS, funders, funder_out)
+
+
+def bundle_scenario(bundle, supply):
+    """Phase 9 extra scenario: the launch supply still concentrated in bundle hands, wherever it sits now."""
+    if not bundle or not bundle.get("supply") or not supply:
+        return None
+    q = bundle["supply"]["concentrated_share"] * supply
+    ws = [h["wallet"] for h in bundle.get("holders_now") or [] if h.get("purity") is None or h["purity"] >= 0.5]
+    return {"bundle_traced": (ws, q)} if q > 0 else None
 
 
 def sell_tax(facts, chain):
@@ -771,11 +804,21 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
         print(f"graph: {token}: {type(e).__name__}: {e}", flush=True)
         rel = None
 
+    # launch bundle (Phase 10): from the launch transactions, traced through every later transfer
+    try:
+        # the time window needs a real clock: with one anchor every block would read the same time
+        anchors = {b for b, v in ts.items() if b is not None and v is not None}
+        bundle = launch_bundle(a, chain, token, facts, launch | {"ts": ts[launch["block"]]}, base, holders, entries,
+                               cov, partial, clock if len(anchors) >= 2 else None, funders, funder_out, deadline)
+    except Exception as e:   # evidence only: never costs the verdict
+        print(f"bundles: {token}: {type(e).__name__}: {e}", flush=True)
+        bundle = None
     # sell impact (Phase 9): every scenario on every venue, with taxes; the «probably rug» marker comes from it
     try:
         si = impact.analyse(holders, sig, ops, base, sell_venues(facts, chain), reserve_ok, sell_tax(facts, chain),
                             locked, mem, a.RUG_SNIPERS, gt.get("price_usd"),
-                            extras.get("decimals", 6 if chain == "solana" else 18))
+                            extras.get("decimals", 6 if chain == "solana" else 18),
+                            extra=bundle_scenario(bundle, supply))
         rug = None if limited else impact.marker(si, sc["band"], sc["gates"], reserve_ok, limited)
     except Exception as e:   # the V1 projection stays if the new block fails
         print(f"impact: {token}: {type(e).__name__}: {e}", flush=True)
@@ -805,7 +848,7 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
         "reserve": facts["reserve"],
         "reserve_ok": reserve_ok, "limited": limited, "market_source": gt.get("source"),
         "market_pool": gt.get("pool"),
-        "rug": rug, "sell_impact": si, "partial_scan": partial_scan,
+        "rug": rug, "sell_impact": si, "bundle": bundle, "partial_scan": partial_scan,
         "unread": unread, "use_funding": bool(funding_links() and funders),
         "elapsed_s": elapsed, "rpc_requests": a.REQUESTS[0] - r0,
         "model": {"id": live, "scores": models},

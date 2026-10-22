@@ -2575,7 +2575,7 @@ rep("  paintHealth(tries=0){", r"""  paintImpact(tries=0){   // sell impact (Pha
     head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','sell impact'),
       mk('span',MONO+';font-size:12px;color:#8a959c',si.liquidity.measured?(si.liquidity.aggregated?si.liquidity.venues.length+' pools together':'1 pool')+(si.liquidity.exact?'':' · approximate'):'liquidity not measured'));
     el.append(head);
-    const NAMES={largest_wallet:'largest wallet',largest_operator:'largest linked operator',launch_bundle:'launch bundle',suspicious_combined:'all suspicious supply'};
+    const NAMES={largest_wallet:'largest wallet',largest_operator:'largest linked operator',launch_bundle:'launch bundle',bundle_traced:'launch supply, traced',suspicious_combined:'all suspicious supply'};
     const tbl=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;overflow:hidden');
     const row=(cells,hdr)=>{const r=mk('div','display:grid;grid-template-columns:minmax(0,1.6fr) repeat(4,minmax(0,1fr));gap:8px;padding:10px 14px;'+MONO+';font-size:'+(hdr?'11px;color:#5f6b72':'12.5px;color:#dfe5e8')+(hdr?'':';border-top:1px solid #141b20'));
       cells.forEach(c=>r.append(typeof c==='string'?mk('span','overflow-wrap:anywhere',c):c)); return r;};
@@ -2598,6 +2598,78 @@ rep("  paintHealth(tries=0){", r"""  paintImpact(tries=0){   // sell impact (Pha
       'Conditional scenarios, not predictions: what the price would do if these wallets sold everything they can sell now into today\'s liquidity, split across the priced pools. Each wallet counts once per row; rows overlap. Depth is the share of float it takes to move the price that much.'));
   }
   paintHealth(tries=0){""")
+
+# ---------------------------------------------------------------------------
+# Launch bundle (Phase 10): participants from the launch transactions, the supply they took traced through every later
+# transfer — initial allocation, still traceable (concentrated / diluted), sold, burned or locked, where it sits now
+# (including outside the top holders), coordination signals and a confidence label with its limits.
+# ---------------------------------------------------------------------------
+rep('siRef=React.createRef();', 'siRef=React.createRef(); bdRef=React.createRef();')
+rep('siRef:this.siRef', 'siRef:this.siRef, bdRef:this.bdRef')
+rep('this.paintHealth(); this.paintImpact();}', 'this.paintHealth(); this.paintImpact(); this.paintBundle();}')
+rep('        <div ref="{{siRef}}" data-sell-impact="1" style="margin-top:56px"></div>\n\n',
+    '        <div ref="{{bdRef}}" data-bundle="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{siRef}}" data-sell-impact="1" style="margin-top:56px"></div>\n\n')
+rep("  paintImpact(tries=0){", r"""  paintBundle(tries=0){   // launch bundle (Phase 10)
+    const m=this.m, el=this.bdRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintBundle(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, b=raw.bundle;
+    if(!b) return;
+    if(b.mode==='none'){   // nobody took supply in the launch window
+      el.append(Object.assign(document.createElement('p'),{textContent:`launch bundle: no wallet took supply in the launch window (blocks ${b.window.from_block}–${b.window.to_block}, first ${b.window.seconds}s) or as a sniper.`}));
+      el.lastChild.style.cssText="font-family:'JetBrains Mono',monospace;margin:0;font-size:12.5px;color:#8a959c;border-top:1px solid #12181c;padding-top:22px";
+      return;}
+    const MONO="font-family:'JetBrains Mono',monospace";
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const pct=v=>v==null?'—':(v>0&&v*100<0.1?'<0.1':(v*100).toFixed(v*100>=10?0:1))+'%';
+    const sh=a=>a&&a.length>12?a.slice(0,6)+'…'+a.slice(-4):(a||'');
+    const CC={high:'#00c805',medium:'#ffb020',low:'#ff4d4d'};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    const left=mk('div','display:flex;align-items:baseline;gap:12px');
+    left.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','launch bundle'),
+      mk('span',MONO+`;font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid ${CC[b.confidence]}66;color:${CC[b.confidence]}`,b.confidence+' confidence'));
+    const n=b.participants.length;
+    head.append(left, mk('span',MONO+';font-size:12px;color:#8a959c',`${n} launch wallet${n===1?'':'s'}`+(b.window&&b.window.blocks!=null?` · block ${b.window.from_block}${b.window.blocks?'–'+b.window.to_block:''}`:'')));
+    el.append(head);
+    const s=b.supply, tiles=[
+      ['initial allocation',pct(s.initial_share)+' of supply'],
+      ['still traceable',pct(s.traceable_share)+(s.concentrated_share!=null&&s.traceable_share>s.concentrated_share+1e-9?` (${pct(s.concentrated_share)} concentrated)`:'')],
+      ['outside the top holders',pct(s.outside_top_share)],
+      ['sold',s.sold_share==null?'not traced':pct(s.sold_share)],
+      ['burned / locked',s.burned_share==null?'not traced':pct((s.burned_share||0)+(s.infra_share||0))],
+      ['current holders',String(b.dispersal.holders_now)+(b.dispersal.fresh_recipients?` · ${b.dispersal.fresh_recipients} new wallets`:'')]];
+    if(s.left_share!=null) tiles.splice(3,2,['left the launch wallets',pct(s.left_share)]);
+    const grid=mk('div','margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1px;border:1px solid #141b20;border-radius:12px;overflow:hidden;background:#141b20');
+    tiles.forEach(([k,v])=>{const c=mk('div','background:#090c0f;padding:10px 14px;display:flex;flex-direction:column;gap:4px');
+      c.append(mk('span',MONO+';font-size:11px;color:#5f6b72',k),mk('span',MONO+';font-size:13px;color:#dfe5e8',v)); grid.append(c);});
+    el.append(grid);
+    const co=b.coordination||{}, sig=[];
+    if(co.same_tx_wallets) sig.push(`${co.same_tx_wallets} wallets bought in shared transactions`);
+    if(co.uniform_buys) sig.push(`${co.uniform_buys} launch-block buys of near-equal size`);
+    if((co.shared_funders||[]).length) sig.push(`${co.shared_funders.length} shared funder${co.shared_funders.length>1?'s':''}`);
+    if(co.internal_transfers) sig.push(`${co.internal_transfers} transfers between launch wallets`);
+    if(sig.length) el.append(mk('p',MONO+';margin:12px 0 0;font-size:12.5px;color:#ffb020','coordination: '+sig.join(' · ')));
+    const KIND={buy:'buy',dev_transfer:'from deployer',transfer:'transfer',deployer:'deployer',sniper:'sniper'};
+    const ST={holding:'holding',sold_all:'sold all',sold_part:'sold part',moved:'moved on',moved_part:'moved part',burned:'burned',gone:'gone',partly_out:'partly out'};
+    const tbl=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;overflow:hidden');
+    const row=(cells,hdr)=>{const r=mk('div','display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) repeat(3,minmax(0,0.8fr)) minmax(0,1fr);gap:8px;padding:9px 14px;'+MONO+';font-size:'+(hdr?'11px;color:#5f6b72':'12.5px;color:#dfe5e8')+(hdr?'':';border-top:1px solid #141b20'));
+      cells.forEach(c=>r.append(mk('span','overflow-wrap:anywhere',c))); return r;};
+    tbl.append(row(['launch wallet','how','took','holds','sold','now'],true));
+    b.participants.slice(0,15).forEach(p=>tbl.append(row([sh(p.wallet)+(p.in_top?' ·top':''),KIND[p.kind]||p.kind,pct(p.acquired_share),pct(p.held_share),p.sold_share==null?'—':pct(p.sold_share),ST[p.status]||p.status])));
+    el.append(tbl);
+    const out=(b.holders_now||[]).filter(h=>!h.original);
+    if(out.length){
+      el.append(mk('p',MONO+';margin:16px 0 6px;font-size:11px;color:#5f6b72','where launch supply sits now (not a launch wallet)'));
+      const t2=mk('div','border:1px solid #141b20;border-radius:12px;overflow:hidden');
+      out.slice(0,10).forEach((h,i)=>{const r=mk('div','display:grid;grid-template-columns:minmax(0,1.3fr) repeat(3,minmax(0,1fr));gap:8px;padding:9px 14px;'+MONO+';font-size:12.5px;color:#dfe5e8'+(i?';border-top:1px solid #141b20':''));
+        r.append(mk('span','',sh(h.wallet)),mk('span','',pct(h.share)),mk('span','color:#8a959c',h.purity==null?'—':Math.round(h.purity*100)+'% bundle'),mk('span','color:'+(h.in_top?'#8a959c':'#ffb020'),h.in_top?'in top':'outside top'+(h.hop?` · ${h.hop} hop${h.hop>1?'s':''}`:''))); t2.append(r);});
+      el.append(t2);}
+    (b.limits||[]).forEach(l=>el.append(mk('p',MONO+';margin:8px 0 0;font-size:11.5px;color:#8a959c','limit: '+l)));
+    el.append(mk('p',MONO+';margin:10px 0 0;font-size:11.5px;line-height:1.6;color:#5f6b72',
+      'Launch wallets are read from the launch transactions, not the current top list. Their supply is followed through every later transfer in proportion (pro-rata) until it reaches a pool (sold), a burn address or a locker. Concentrated: wallets where at least half the balance is launch supply.'));
+  }
+  paintImpact(tries=0){""")
 
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'
