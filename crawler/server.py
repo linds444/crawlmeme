@@ -234,6 +234,14 @@ def _run_job(job_id, token):
             err = f"scan failed: {e}"
         else:
             err = None
+    try:
+        if not err:
+            # before done: a client that reacts to the verdict (the page's /api/early) must find the snapshot it
+            # writes into. Local writes only; they log their own failures and never fail the scan.
+            opmem.record(res)       # queue only (OPMEM_ENABLED), the write happens in its own thread
+            record_recent(res)
+            record_snapshot(res)
+    finally:                        # the job ends whatever a store did
         with _cv:
             if err:
                 job["error"] = err
@@ -242,10 +250,6 @@ def _run_job(job_id, token):
                                       "chain": job["chain"]})
             job["done"] = True
             _cv.notify_all()
-    if not err:
-        opmem.record(res)       # queue only (OPMEM_ENABLED), the write happens in its own thread
-        record_recent(res)
-        record_snapshot(res)
 
 
 HOLDERS_PAGE, HOLDERS_PAGE_MAX = 100, 1000   # /api/holders page size: default and maximum
