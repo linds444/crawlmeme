@@ -1,7 +1,7 @@
 """Memory brain (crawler/memory_db.py) and Phase 7 cabals (crawler/cabals.py).
 Offline by default. With CRAWLER_PG=<socket dir>:<port> (a local Postgres with supabase/migrations applied and the
 anon / authenticated / service_role roles), TestPostgres runs the real SQL behind a PostgREST stand-in."""
-import json, os, subprocess, threading, unittest
+import json, os, subprocess, threading, time, unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
@@ -67,6 +67,7 @@ class TestClient(StubBase):
         self.assertEqual(headers.get("apikey"), SECRET)
         self.assertNotIn("authorization", headers)                     # sb_secret is not a JWT
         self.assertNotIn(SECRET, path)
+        self.assertRegex(args.pop("p_as_of"), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")   # read as of the scan start
         self.assertEqual(args, {"p_chain": "bsc", "p_token": "0xt", "p_wallets": ["0xa"], "p_funders": ["0xf"],
                                 "p_deployer": "0xd"})
 
@@ -159,22 +160,80 @@ class TestPostgres(StubBase):
 
     def sql(self, name, args):
         host, port = PG.split(":")
-        if name == "memory_record":
-            q = f"select public.memory_record({self.lit(json.dumps(args['p']))}::jsonb)"
+        if name in ("memory_record", "outcome_record"):
+            q = f"select public.{name}({self.lit(json.dumps(args['p']))}::jsonb)"
+        elif name == "outcomes_due":
+            q = f"select public.outcomes_due({int(args['p_limit'])})"
         else:
             arr = lambda xs: "array[" + ",".join(self.lit(x) for x in xs) + "]::text[]"
             dep = self.lit(args["p_deployer"]) if args["p_deployer"] else "null"
             q = (f"select public.memory_lookup({self.lit(args['p_chain'])}, {self.lit(args['p_token'])}, "
-                 f"{arr(args['p_wallets'])}, {arr(args['p_funders'])}, {dep})")
-        out = subprocess.run(["psql", "-h", host, "-p", port, "-U", "postgres", "-At", "-v", "ON_ERROR_STOP=1",
-                              "-c", "set role service_role; " + q], capture_output=True, text=True, timeout=30)
+                 f"{arr(args['p_wallets'])}, {arr(args['p_funders'])}, {dep}, "
+                 f"{self.lit(args['p_as_of'])}::timestamptz)")
+        out = self.psql("set role service_role; " + q)
         if out.returncode:
             return 500, {"message": out.stderr}
         return 200, json.loads(out.stdout.strip().splitlines()[-1])
 
     @staticmethod
+    def psql(q):
+        host, port = PG.split(":")
+        return subprocess.run(["psql", "-h", host, "-p", port, "-U", "postgres", "-At", "-v", "ON_ERROR_STOP=1",
+                               "-c", q], capture_output=True, text=True, timeout=30)
+
+    @staticmethod
     def lit(s):
         return "'" + str(s).replace("'", "''") + "'"
+
+    def test_phase11_outcomes_as_of_dev_groups_and_clusters(self):
+        self.start(self.sql)
+        chain = "test-" + os.urandom(4).hex()
+        bundle = lambda ws: {"mode": "traced", "confidence": "high", "supply": {"initial_share": 0.3},
+                             "dispersal": {"fresh_recipients": 0},
+                             "participants": [{"wallet": w, "kind": "buy", "acquired_share": 0.05, "tx": "0x" + w,
+                                               "status": "holding"} for w in ws]}
+        res = lambda token, dep, ws, price: {
+            "chain": chain, "token": token, "band": "RISKY", "score": 50, "header": {"price_usd": price,
+                                                                                    "liquidity_usd": 1000.0},
+            "market_source": "gt", "launch": {"deployer": dep, "block": 10, "ts": 1.7e9, "tx": "0xl"},
+            "holders": [{"wallet": w, "share": 0.1, "signals": {"kind": "buy"}, "forensics": {}} for w in ws],
+            "graph": {"nodes": [], "edges": [{"a": ws[0], "b": ws[1], "kind": "same_tx", "level": "proven",
+                                              "confidence": 1.0, "tx": "0xab"}]},
+            "operators": [{"wallets": ws[:2], "share": 0.2, "level": "proven"}], "bundle": bundle(ws),
+            "data_health": {"confidence": "high"}, "coverage": {"level": "full"}, "holders_total": 50}
+        a = memory_db.record(res("a", "dev1", ["w1", "w2", "w3"], 1.0), {"events": [
+            {"wallet": "w1", "kind": "buy", "block": 11, "tx": "0xe1", "amount": "5"}]})
+        b = memory_db.record(res("b", "dev2", ["w1", "w2", "w4"], 2.0))
+        self.assertIsInstance(a, int)
+        # dev1 and dev2 share two launch-bundle wallets: one dev group
+        mem = memory_db.lookup(chain, "c", ["w1", "w2"], [], "dev2")
+        self.assertEqual(mem["deployer"]["group"], ["dev1"])
+        self.assertEqual(mem["deployer"]["group_tokens"], 2)
+        self.assertEqual(mem["clusters"][0]["level"], "proven")
+        self.assertEqual(sorted(mem["clusters"][0]["wallets"]), ["w1", "w2"])
+        self.assertIn("w1", mem["observations"])
+        # outcomes: due in the future, nothing to measure yet
+        self.assertEqual(memory_db.outcomes_due(), [])
+        self.psql(f"update public.outcomes set due_at = now() - interval '1 hour' where chain = '{chain}'")
+        due = [o for o in memory_db.outcomes_due(300) if o["chain"] == chain]
+        self.assertEqual(sorted((o["token"], o["horizon_h"]) for o in due),
+                         [("a", 24), ("a", 168), ("b", 24), ("b", 168)])
+        before = time.time()                                          # after the scans, before the measurement
+        time.sleep(0.05)
+        rows = [{"scan_id": o["scan_id"], "horizon_h": o["horizon_h"], "chain": chain, "token": o["token"],
+                 "price_ratio": 0.01, "liquidity_ratio": 0.0, "label": "rugged", "basis": {"source": "gt"}}
+                for o in due]
+        self.assertEqual(memory_db.outcome_record(rows), 4)
+        # as of before the measurement: the labels do not exist yet (no future data)
+        old = memory_db.lookup(chain, "c", ["w1", "w2"], [], "dev2", as_of=before)
+        self.assertEqual((old["deployer"]["rugged"], old["seen"]["w1"]["rugged"]), (0, 0))
+        new = memory_db.lookup(chain, "c", ["w1", "w2"], [], "dev2")
+        self.assertEqual((new["deployer"]["rugged"], new["seen"]["w1"]["rugged"]), (2, 2))
+        out = cabals.analyse(new, [("w1", 1, 0.4), ("w2", 1, 0.3)], 1.0, {})
+        self.assertTrue({"rug_history", "rugged_regulars", "dev_group", "recurring_cluster"} <= set(out["flags"]))
+        # the token's own outcome is never evidence about it
+        own = memory_db.lookup(chain, "a", ["w1"], [], "dev1")
+        self.assertEqual(own["seen"]["w1"]["rugged"], 1)
 
     def test_record_then_lookup_from_another_token(self):
         self.start(self.sql)

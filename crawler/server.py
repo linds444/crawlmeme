@@ -11,6 +11,7 @@ Read-only: the scan runs in the background, the browser polls for events.
                                             "share_supply", "analysed"}]}  every holder, largest first (limit ≤ 1000)
   GET  /api/chart?token=CA               -> {"token", "chain", "pool", "dex", "timeframe", "candles", "price_usd"[, "stale_at" | "unavailable"]}
                                             GeckoTerminal candles [[ts, o, h, l, c, v]] oldest to newest; not part of the scan
+  GET  /api/cron/outcomes                 -> Phase 11 outcome worker (Authorization: Bearer $CRON_SECRET; Vercel Cron)
   GET  /api/early?token=CA               -> {"token", "chain", "available", "buyers": [...], "summary": {...}[, "stale_at"]}
                                             first 20 buyers and their current status (early.py); not part of the scan
   GET  /api/recent?limit=12              -> {"items": [{"token", "chain", "launchpad", "ticker", "name", "score", "band", "rug", "ts"}]}
@@ -71,6 +72,7 @@ from crawler import scoring
 from crawler.chains import bankr, flap, priority, registry
 from crawler.chains.evm import networks as evm_networks
 from crawler import early
+from crawler import outcomes
 from crawler import engine
 from crawler import market
 from crawler import memguard
@@ -113,6 +115,7 @@ BY_TOKEN = {}              # token -> job_id of the latest scan
 _lock = threading.Lock()
 _cv = threading.Condition(_lock)   # notified on every new job event and when a job finishes (event streams wait on it)
 STREAM_HEARTBEAT_S = 10            # comment line on an idle stream: keeps proxies from closing it
+STORES_WAIT_S = 8.0       # a stream waits this long for the job's stores (memory write) after the result
 STREAM_MAX_S = 120                 # a stream never outlives this (a scan's budget is 25 s)
 _STREAMS = [0]                     # open event streams (cap: STREAMS_MAX)
 
@@ -223,8 +226,8 @@ def _run_job(job_id, token):
 
     with _sem:
         try:
-            holders = []
-            res = engine.scan(token, emit, chain=job["chain"], holders_out=holders)
+            holders, memo = [], {}
+            res = engine.scan(token, emit, chain=job["chain"], holders_out=holders, memory_out=memo)
             with _lock:
                 job["result"] = res
                 job["holders_all"] = holders
@@ -244,7 +247,11 @@ def _run_job(job_id, token):
             opmem.record(res)       # queue only (OPMEM_ENABLED), the write happens in its own thread
             record_recent(res)
             record_snapshot(res)
-            memory_db.record(res)   # memory brain (Supabase): one RPC; on Vercel nothing runs after the response
+            with _cv:               # local stores done: streams send the result now, the remote write follows
+                job["ready"] = True
+                _cv.notify_all()
+            memory_db.record(res, memo)   # memory brain (Supabase): one RPC; on Vercel nothing runs after the
+                                          # response, so the stream stays open until this is done (_stream)
     finally:                        # the job ends whatever a store did
         with _cv:
             if err:
@@ -807,24 +814,27 @@ class H(BaseHTTPRequestHandler):
         if self.command == "HEAD":
             return
         until = time.time() + STREAM_MAX_S
+        sent = False
         try:
             self.wfile.write(b"retry: 2000\n\n" + sse("job", {"job": jid, "chain": job["chain"], "token": job["token"]}))
             self.wfile.flush()
             while True:
                 with _cv:
-                    if len(job["events"]) <= after and not job["done"]:
+                    if len(job["events"]) <= after and not job["done"] and (sent or not job.get("ready")):
                         _cv.wait(STREAM_HEARTBEAT_S)
-                    new, done = job["events"][after:], job["done"]
-                    final = None if not done else ({"done": True, "error": job["error"]} if job["error"]
-                                                   else {"done": True, "result": job["result"]})
+                    new, done, ready = job["events"][after:], job["done"], job.get("ready")
+                    final = ({"done": True, "error": job["error"]} if done and job["error"] else
+                             {"done": True, "result": job["result"]} if (done or ready) and not sent else None)
                 out = b"".join(sse("scan", e, e["i"]) for e in new)
                 after += len(new)
-                if done:   # events and done were read together: nothing can follow the last event
+                if final is not None:   # the result as soon as it exists; the memory write runs after it
                     out += sse("result", final)
-                elif not new:
+                    sent = True
+                elif not new and not sent:   # after the result nothing more is written: it stays the last frame
                     out += sse(comment="ping")
-                self.wfile.write(out)
-                self.wfile.flush()
+                if out:
+                    self.wfile.write(out)
+                    self.wfile.flush()
                 if done:
                     return
                 if time.time() >= until:
@@ -832,7 +842,30 @@ class H(BaseHTTPRequestHandler):
                     self.wfile.flush()
                     return
         except (BrokenPipeError, ConnectionResetError):   # client left: the scan goes on (cache, other listeners)
-            return
+            pass
+        finally:   # a serverless function must not end its response before the job's stores (memory) have run
+            self._wait_done(job)
+
+    def _cron_outcomes(self):
+        """Phase 11 outcome worker (Vercel Cron). Only with Authorization: Bearer $CRON_SECRET — Vercel sends it
+        when the variable is set; unset, the endpoint refuses (fails closed). Compared in constant time."""
+        secret = (os.environ.get("CRON_SECRET") or "").strip()
+        if not secret:
+            return self._send(503, {"error": "outcome worker not configured (CRON_SECRET)"})
+        got = self.headers.get("authorization") or ""
+        if not hmac.compare_digest(got.encode(), ("Bearer " + secret).encode()):
+            return self._send(401, {"error": "unauthorized"})
+        try:
+            return self._send(200, outcomes.run())
+        except memory_db.MemoryUnavailable as e:
+            return self._send(503, {"error": f"memory unavailable: {e}"})
+
+    @staticmethod
+    def _wait_done(job, limit=STORES_WAIT_S):
+        end = time.time() + limit
+        with _cv:
+            while job.get("ready") and not job["done"] and time.time() < end:
+                _cv.wait(max(0.05, end - time.time()))
 
     def _job(self, q):
         jid = (q.get("job") or [""])[0]
@@ -960,6 +993,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, get_chart((q.get("token") or [""])[0]))
             except engine.ScanError as e:
                 return self._send(400, {"error": str(e)})
+        if u.path == "/api/cron/outcomes":
+            return self._cron_outcomes()
         if u.path == "/api/early":
             try:
                 token = (q.get("token") or [""])[0]

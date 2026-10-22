@@ -8,14 +8,19 @@ token's own history never counts as evidence about it.
                    from this scan's hub check or memory's) are listed apart and never called a cabal
   seen_wallets     each top holder's appearances among other tokens' top holders, with those tokens' verdicts
   deployer         the deployer's other tokens in memory and their verdicts (serial launcher)
-  flags            short labels for the page: crew, serial_deployer, repeat_funder, danger_regulars
+  clusters         operators of other tokens that contain 2+ current holders (recurring clusters, Phase 11)
+  outcome history  rugged / labelled counts from market outcomes measured before the scan (Phase 11): the deployer
+                   and its dev group (deployers linked by shared launch-bundle wallets), and each seen wallet
+  flags            short labels for the page: crew, serial_deployer, repeat_funder, danger_regulars, rug_history,
+                   rugged_regulars, dev_group, recurring_cluster
 Nothing here changes the score: memory is young, and the profitability-backed «smart crew» model needs enough
 history to evaluate without look-ahead (Phase 1 audit). The page shows it as evidence beside the verdict.
 """
 CREW_MIN_TOKENS = 2         # pairs of holders top-holding ≥ this many other tokens together form a crew
 SERIAL_DEPLOYER = 2         # deployer with ≥ this many other tokens in memory
 DANGER_REGULAR = 2          # a holder that sat in the top of ≥ this many DANGER tokens
-VERSION = 1
+RUG_HISTORY = 2            # outcome-labelled rugs (before the scan) that make a deployer or holder a repeat
+VERSION = 2
 
 
 def _crews(pairs, share, ratio):
@@ -63,6 +68,7 @@ def analyse(mem, holders, ratio, funders, funder_out=None, hub_min=100):
         return None if n is None else n >= hub_min
 
     seen_wallets = [{"wallet": w, "rank": i + 1, "tokens": seen[w]["tokens"], "danger": seen[w]["danger"],
+                     "rugged": seen[w].get("rugged", 0), "labelled": seen[w].get("labelled", 0),
                      "list": seen[w].get("list") or []}
                     for i, (w, _, _) in enumerate(holders) if w in seen]
     funded = {}
@@ -78,6 +84,8 @@ def analyse(mem, holders, ratio, funders, funder_out=None, hub_min=100):
     crews = _crews(mem.get("pairs") or [], share, ratio)
     dep = mem.get("deployer") or {"tokens": 0, "list": []}
     dep_danger = sum(1 for t in dep.get("list") or [] if t.get("band") == "DANGER")
+    # Phase 11: recurring clusters — 2+ current holders that were one operator in another token (proven or pack)
+    clusters = [c for c in mem.get("clusters") or [] if len(c.get("wallets") or []) >= 2]
     flags = []
     if crews:
         flags.append("crew")
@@ -87,7 +95,20 @@ def analyse(mem, holders, ratio, funders, funder_out=None, hub_min=100):
         flags.append("repeat_funder")
     if sum(1 for s in seen_wallets if s["danger"] >= DANGER_REGULAR) >= 2:
         flags.append("danger_regulars")
+    # outcome-backed (Phase 11): market labels measured before this scan started, not our own verdicts
+    if dep.get("rugged", 0) >= RUG_HISTORY:
+        flags.append("rug_history")
+    if sum(1 for s in seen_wallets if s["rugged"] >= RUG_HISTORY) >= 2:
+        flags.append("rugged_regulars")
+    if dep.get("group"):
+        flags.append("dev_group")
+    if any(c.get("level") == "proven" for c in clusters):
+        flags.append("recurring_cluster")
     return {"version": VERSION, "memory": mem.get("memory") or {}, "elapsed_ms": mem.get("elapsed_ms"),
             "seen_wallets": seen_wallets, "crews": crews, "repeat_funders": repeat_funders,
-            "deployer": {"tokens": dep.get("tokens", 0), "danger": dep_danger, "list": dep.get("list") or []},
+            "deployer": {"tokens": dep.get("tokens", 0), "danger": dep_danger, "list": dep.get("list") or [],
+                         "group": dep.get("group") or [], "group_tokens": dep.get("group_tokens", 0),
+                         "rugged": dep.get("rugged", 0), "labelled": dep.get("labelled", 0)},
+            "clusters": clusters, "outcomes": mem.get("outcomes") or {}, "as_of": mem.get("as_of"),
+            "observations": mem.get("observations") or {},
             "flags": flags}

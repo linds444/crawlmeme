@@ -1,7 +1,7 @@
 """Memory brain client: Supabase Postgres through PostgREST RPC (standard library only; schema in
 supabase/migrations/20261022120000_memory.sql).
 
-Two calls per scan:
+Two calls per scan (and two for the outcome worker, crawler/outcomes.py):
   lookup(...)  memory_lookup — what memory knows about the scan's top holders, their funders and the deployer, from
                OTHER tokens (Phase 7 reads it before the verdict)
   record(res)  memory_record — the finished scan, normalised (tokens, scans, wallets, holdings, funding, funder
@@ -62,15 +62,21 @@ def _rpc(name, args, timeout):
         raise MemoryUnavailable(f"{name}: {type(e).__name__}") from None
 
 
-def lookup(chain, token, wallets, funders, deployer, timeout=LOOKUP_TIMEOUT):
-    """memory_lookup result (dict) or None (memory off or unavailable)."""
+def _iso(ts):
+    """RFC 3339 UTC with milliseconds: a whole-second time would hide rows written earlier in the same second."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)) + f".{int(ts % 1 * 1000):03d}Z"
+
+
+def lookup(chain, token, wallets, funders, deployer, timeout=LOOKUP_TIMEOUT, as_of=None):
+    """memory_lookup result (dict) or None (memory off or unavailable). as_of — unix time the memory is read at:
+    only rows that existed before it count (a scan passes its start time; a backtest passes the evaluation time)."""
     if not enabled():
         return None
     t0 = time.time()
     try:
         out = _rpc("memory_lookup", {"p_chain": chain, "p_token": token, "p_wallets": list(wallets),
                                      "p_funders": sorted(set(f for f in funders if f)),
-                                     "p_deployer": deployer}, timeout)
+                                     "p_deployer": deployer, "p_as_of": _iso(as_of or t0)}, timeout)
     except MemoryUnavailable as e:
         print(f"memory: lookup failed ({e})", flush=True)
         return None
@@ -81,17 +87,57 @@ def lookup(chain, token, wallets, funders, deployer, timeout=LOOKUP_TIMEOUT):
     return None
 
 
-def payload(res):
-    """memory_record argument from a finished scan result (engine.scan)."""
+CONFIRMED_EDGES = {"same_tx": "shared_transaction", "direct": "direct_transfer", "funded": "funded_by_holder",
+                   "distributor": "common_distributor"}   # on-chain facts: a transaction proves them
+UNCONFIRMED_EDGES = {"pack": "pack", "funding": "common_funder"}   # statistical: timing, sizes, a shared funder
+
+
+def observations(res):
+    """Behavioural observations with their evidence, for the memory brain. confirmed — an on-chain fact backs it (a
+    shared transaction, a direct transfer, a funding transfer, a launch transaction); unconfirmed — statistical. Only
+    what the scan documented: no observation without evidence."""
+    out = []
+    for e in (res.get("graph") or {}).get("edges") or []:
+        kind = CONFIRMED_EDGES.get(e.get("kind"))
+        status = "confirmed" if kind else "unconfirmed"
+        kind = kind or UNCONFIRMED_EDGES.get(e.get("kind"))
+        if not kind or (status == "unconfirmed" and (e.get("confidence") or 0) < 0.5):   # hub funding: no claim
+            continue
+        ev = {"with": e["b"], "tx": e.get("tx"), "block": e.get("block"), "via": e.get("via")}
+        out.append({"subject": e["a"], "subject_kind": "funder" if e["kind"] == "funding" else "wallet",
+                    "kind": kind, "status": status,
+                    "confidence": e.get("confidence"), "evidence": {k: v for k, v in ev.items() if v is not None}})
+    b = res.get("bundle") or {}
+    for p in (b.get("participants") or [])[:40]:
+        if p.get("tx"):
+            out.append({"subject": p["wallet"], "subject_kind": "deployer" if p["kind"] == "deployer" else "wallet",
+                        "kind": "launch_" + p["kind"], "status": "confirmed", "confidence": 1.0,
+                        "evidence": {"tx": p["tx"], "block": p.get("block"),
+                                     "acquired_share": p.get("acquired_share"), "status": p.get("status")}})
+    for c in ((res.get("memory") or {}).get("crews")) or []:
+        for w in c.get("wallets") or []:
+            out.append({"subject": w, "subject_kind": "wallet", "kind": "crew", "status": "unconfirmed",
+                        "confidence": 0.5, "evidence": {"with": c["wallets"], "tokens": c.get("tokens"),
+                                                        "together": c.get("together")}})
+    return out
+
+
+def payload(res, extra=None):
+    """memory_record argument from a finished scan result (engine.scan); extra — engine memory_out (events)."""
     g = res.get("graph") or {}
     nodes = {n["id"]: n for n in g.get("nodes") or []}
+    bundle = res.get("bundle") or {}
+    bkind = {p["wallet"]: p["kind"] for p in bundle.get("participants") or []}
     holders = []
     for i, h in enumerate(res.get("holders") or [], 1):
-        f = (h.get("forensics") or {}).get("funding") or {}
+        fz = h.get("forensics") or {}
+        f = fz.get("funding") or {}
         node = nodes.get(h["wallet"]) or {}
         holders.append({"wallet": h["wallet"], "rank": i, "share": h.get("share"),
                         "entry": (h.get("signals") or {}).get("kind"), "flags": node.get("flags") or [],
-                        "operator": node.get("operator"), "funder": f.get("funder") if f.get("found") else None})
+                        "operator": node.get("operator"), "funder": f.get("funder") if f.get("found") else None,
+                        "pnl_usd": fz.get("pnl_usd"), "cost_usd": fz.get("cost_usd"), "hold_h": fz.get("hold_h"),
+                        "bundle": bkind.get(h["wallet"])})
     funding = [{"wallet": h["wallet"], "funder": f["funder"], "block": f.get("block"), "tx": f.get("tx"),
                 "amount": f.get("amount")}
                for h in res.get("holders") or []
@@ -111,17 +157,55 @@ def payload(res):
             "scores": {k: {"score": v.get("score"), "band": v.get("band"),
                            "adjustments": [a["code"] for a in v.get("adjustments") or []]}
                        for k, v in ((res.get("model") or {}).get("scores") or {}).items()},
-            "holders": holders, "funding": funding, "funders": funders, "edges": edges}
+            "holders": holders, "funding": funding, "funders": funders, "edges": edges,
+            # Phase 11
+            "confidence": (res.get("data_health") or {}).get("confidence"),
+            "data_health": res.get("data_health"),
+            "market": {"source": res.get("market_source"), **{k: header.get(k) for k in
+                                                               ("price_usd", "mcap_usd", "fdv_usd", "liquidity_usd")}}
+                      if header.get("price_usd") is not None or header.get("liquidity_usd") is not None else None,
+            "launch": {"block": launch.get("block"), "ts": launch.get("ts"), "tx": launch.get("tx")}
+                      if launch.get("block") is not None else None,
+            "operators": [{"idx": i, "wallets": o["wallets"], "level": o.get("level"), "share": o.get("share")}
+                          for i, o in enumerate(res.get("operators") or []) if len(o.get("wallets") or []) > 1],
+            "bundle": None if not bundle else {
+                "mode": bundle.get("mode"), "confidence": bundle.get("confidence"),
+                "participants": len(bundle.get("participants") or []),
+                "initial_share": (bundle.get("supply") or {}).get("initial_share"),
+                "traceable_share": (bundle.get("supply") or {}).get("traceable_share"),
+                "concentrated_share": (bundle.get("supply") or {}).get("concentrated_share"),
+                "sold_share": (bundle.get("supply") or {}).get("sold_share"),
+                "fresh_recipients": (bundle.get("dispersal") or {}).get("fresh_recipients"),
+                "list": [{k: p.get(k) for k in ("wallet", "kind", "acquired_share", "held_share", "sold_share",
+                                                "status", "tx")} for p in (bundle.get("participants") or [])[:100]]},
+            "events": (extra or {}).get("events") or [],
+            "observations": observations(res)}
 
 
-def record(res, timeout=RECORD_TIMEOUT):
+def record(res, extra=None, timeout=RECORD_TIMEOUT):
     """Write a finished scan; the new scan id or None. Partial / too-established results are not memory."""
     if not enabled() or not res or res.get("score") is None or res.get("partial_scan"):
         return None
     try:
-        sid = _rpc("memory_record", {"p": payload(res)}, timeout)
+        sid = _rpc("memory_record", {"p": payload(res, extra)}, timeout)
     except MemoryUnavailable as e:
         print(f"memory: record failed ({e})", flush=True)
         return None
     STATS["records"] += 1
     return sid
+
+
+def outcomes_due(limit=60, timeout=RECORD_TIMEOUT):
+    """[{"scan_id", "horizon_h", "chain", "token", "due_at", "scanned_at", "price_usd", "liquidity_usd"}] waiting to
+    be measured, oldest first; [] when memory is off. Raises MemoryUnavailable (the worker reports it)."""
+    if not enabled():
+        return []
+    return _rpc("outcomes_due", {"p_limit": limit}, timeout) or []
+
+
+def outcome_record(rows, timeout=RECORD_TIMEOUT):
+    """Store measured outcomes ([{"scan_id", "horizon_h", "chain", "token", "price_ratio", "liquidity_ratio",
+    "label", "basis"}]); how many were written."""
+    if not enabled() or not rows:
+        return 0
+    return _rpc("outcome_record", {"p": {"rows": rows}}, timeout) or 0

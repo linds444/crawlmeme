@@ -2671,6 +2671,25 @@ rep("  paintImpact(tries=0){", r"""  paintBundle(tries=0){   // launch bundle (P
   }
   paintImpact(tries=0){""")
 
+# ---------------------------------------------------------------------------
+# Memory brain (Phase 11) in «seen before»: outcome history (market labels measured before the scan), the deployer's
+# dev group, recurring operator clusters, and an outcome chip on earlier tokens.
+# ---------------------------------------------------------------------------
+rep("""    (mem.repeat_funders||[]).filter(r=>r.other_tokens>0).forEach(r=>{const hub=r.hub===true;""",
+    """    if(dep.rugged>=1) box('255,77,77','rug history',mk('span','',`${dep.rugged} of ${dep.labelled} earlier tokens of this deployer${(dep.group||[]).length?' or its dev group':''} rugged (market outcome measured after their scans)`));
+    if((dep.group||[]).length){const g=mk('span',''); dep.group.slice(0,6).forEach((a,i)=>{if(i) g.append(document.createTextNode(', ')); g.append(addr(a,'#ffe0b0'));});
+      box('255,176,32','dev group',mk('span','','deployer linked to'),g,mk('span','',`· the same wallets took supply at their launches · ${dep.group_tokens} tokens in the group`));}
+    (mem.clusters||[]).slice(0,4).forEach(c=>{const ws=mk('span',''); c.wallets.forEach((w,i)=>{if(i) ws.append(document.createTextNode(', ')); ws.append(mk('span','',rank(w)+' '),addr(w,'#ffd0d0'));});
+      box(c.level==='proven'?'255,77,77':'255,176,32','recurring cluster',ws,mk('span','',`were one ${c.level==='proven'?'proven operator':'pack'} in another token`));});
+    (mem.repeat_funders||[]).filter(r=>r.other_tokens>0).forEach(r=>{const hub=r.hub===true;""")
+rep("""      s.append(mk('span','',t.ticker?'$'+t.ticker:short(t.token)),mk('span','color:'+c,(t.band||'?').toLowerCase())); s.title=t.token; return s;};""",
+    """      s.append(mk('span','',t.ticker?'$'+t.ticker:short(t.token)),mk('span','color:'+c,(t.band||'?').toLowerCase()));
+      if(t.outcome) s.append(mk('span','color:'+({rugged:'#ff4d4d',dead:'#ff8a8a',up:'#00c805'}[t.outcome]||'#8a959c'),'→ '+t.outcome)); s.title=t.token; return s;};""")
+rep("""    if(!(mem.crews||[]).length&&!dep.tokens&&!sw.length&&!(mem.repeat_funders||[]).some(r=>r.other_tokens>0))""",
+    """    if(!(mem.crews||[]).length&&!dep.tokens&&!sw.length&&!(mem.clusters||[]).length&&!(dep.group||[]).length&&!(mem.repeat_funders||[]).some(r=>r.other_tokens>0))""")
+rep("""      'From CrawlMeme\\'s own memory of earlier scans (other tokens only). A crew is holders that were top holders of 2+ other tokens together. Evidence only, not part of the score yet.'));""",
+    """      'From CrawlMeme\\'s own memory of earlier scans (other tokens only), as it stood when this scan started. A crew is holders that were top holders of 2+ other tokens together. Outcomes (→ rugged, dead, up) are market facts measured after those scans, never our own verdicts. The live verdict does not use memory yet; the shadow models in «how sure is this» do.'));""")
+
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'
 TITLE_NEW = '<title>' + BRAND + '</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')

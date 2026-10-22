@@ -322,6 +322,22 @@ def scan_depth():
     return max(5, min(100, n))
 
 
+EVENTS_PER_WALLET = 30   # memory brain: newest token events kept per analysed holder
+
+
+def wallet_events(transfers, wallets, market, cap=EVENTS_PER_WALLET):
+    """[{"wallet", "kind" (buy | sell | in | out), "block", "tx", "amount"}] of the analysed holders, newest cap each:
+    from the scan's own transfers (no request). Amounts are raw token units as strings (exact)."""
+    want, out, n = set(wallets), [], {}
+    for t in reversed(transfers):
+        for w, kind in ((t["to"], "buy" if t["frm"] in market else "in"),
+                        (t["frm"], "sell" if t["to"] in market else "out")):
+            if w in want and n.get(w, 0) < cap and t.get("tx"):
+                n[w] = n.get(w, 0) + 1
+                out.append({"wallet": w, "kind": kind, "block": t["block"], "tx": t["tx"], "amount": str(t["amount"])})
+    return out
+
+
 def sell_venues(facts, chain):
     """impact.py venues from the adapter's facts["venues"]; adapters without them (Bankr) — the V1 inputs: a quote
     curve when there is one, else the reserve as a constant-product pool."""
@@ -407,7 +423,7 @@ def _reason(sc, base, n=d.TOP_N):
             "concentration": f"top {n} hold {m['concentration'] * 100:.1f}% of float"}[k]
 
 
-def scan(token, emit=lambda e: None, chain=None, holders_out=None):
+def scan(token, emit=lambda e: None, chain=None, holders_out=None, memory_out=None):
     """Full token scan. emit(event) -- events in README format. Returns result (dict).
     ScanError -- user-facing error (address, not Pons V2 / pump.fun, Solana disabled); other exceptions -- failure.
     The chain adapter returns token facts in a common shape (token_facts): transfers, supply,
@@ -531,6 +547,8 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     base = facts["base"] or d.supply_base(transfers, supply, excluded)
     holders = d.top_holders(base, scan_depth())
     hs = [w for w, _, _ in holders]
+    if memory_out is not None:   # Phase 11: the analysed holders' token events, for the memory brain only
+        memory_out["events"] = wallet_events(transfers, hs, mkt)
     if holders_out is not None:
         holders_out.extend(sorted(base["balances"].items(), key=lambda x: (-x[1], x[0])))
     ratio = base["circulating"] / supply if supply else 0.0
@@ -671,7 +689,7 @@ def scan(token, emit=lambda e: None, chain=None, holders_out=None):
     mem_box = {}
     mem_funders = [f["funder"] for f in funders.values() if f and f.get("found") and f.get("funder")]
     mt = threading.Thread(target=lambda: mem_box.update(
-        mem=memory_db.lookup(chain, token, hs, mem_funders, launch.get("deployer"))), daemon=True)
+        mem=memory_db.lookup(chain, token, hs, mem_funders, launch.get("deployer"), as_of=t0)), daemon=True)
     if memory_db.enabled():
         mt.start()
     unread = [w for w in hs if w not in done]

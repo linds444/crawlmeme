@@ -11,6 +11,11 @@ Models
                   danger regulars   2+ top holders that each sat in 2+ DANGER tokens             −5
                   crew holding ≥ 10% of float now                                                 band ≤ RISKY
                 Funding links (Phase 6) already merge operators inside crawlmeme-1, so they are not counted again.
+  crawlmeme-3   crawlmeme-1 plus adjustments backed only by leakage-safe evidence (Phase 11): market outcomes measured
+                before the scan (rug history of the deployer or its dev group, holders that sat in 2+ later-rugged
+                tokens) and proven operator clusters seen in other tokens; every adjustment lists its evidence.
+                crawlmeme-2's DANGER-based adjustments use our own past verdicts as labels (circular); crawlmeme-3
+                replaces them with market outcomes.
 Every scan computes every model. The live one (SCORE_MODEL, default crawlmeme-1) gives the verdict; the others are
 shadow verdicts, shown and stored in memory, so a model's accuracy can be compared on real outcomes (Rug / Gem
 Replay, Phase 13) before it is promoted. Why crawlmeme-2 is not live yet: memory is new, and adjustments that depend
@@ -21,7 +26,8 @@ import os
 from crawler import detect as d
 
 BASE = "crawlmeme-1"
-MODELS = ("crawlmeme-1", "crawlmeme-2")
+MODELS = ("crawlmeme-1", "crawlmeme-2", "crawlmeme-3")
+RUG_HISTORY_POINTS, RUGGED_REGULARS_POINTS, CLUSTER_POINTS = 12, 6, 6
 CREW_POINTS, CREW_CAP = 8, 15
 SERIAL_POINTS, SERIAL_DANGER_POINTS, SERIAL_DANGER_MIN = 4, 10, 2
 REPEAT_FUNDER_POINTS = 5
@@ -82,11 +88,59 @@ def _v2(v1, memory):
     return out
 
 
+def _apply(v1, adj, caps):
+    """A verdict from crawlmeme-1 plus adjustments and soft caps; never raises a DANGER verdict."""
+    out = {"score": v1.get("score"), "band": v1.get("band"), "gates": list(v1.get("gates") or []), "adjustments": []}
+    if v1.get("score") is None or (not adj and not caps):
+        return out
+    score = max(0, round(v1["score"] + sum(a["points"] for a in adj)))
+    band = band_of(score)
+    if caps and score > SOFT_CAP_SCORE:
+        score, band = SOFT_CAP_SCORE, band_of(SOFT_CAP_SCORE)
+    if v1["band"] == "DANGER":
+        band, score = "DANGER", min(score, v1["score"])
+    out.update(score=score, band=band, adjustments=adj, gates=out["gates"] + caps)
+    return out
+
+
+def _tokens(rows, label="rugged", n=6):
+    return [{"token": r.get("token"), "ticker": r.get("ticker"), "outcome": r.get("outcome"),
+             "measured_at": r.get("outcome_at")} for r in rows or [] if r.get("outcome") == label][:n]
+
+
+def _v3(v1, memory):
+    """crawlmeme-3: crawlmeme-1 plus adjustments backed only by documented, leakage-safe evidence — market outcomes
+    measured before the scan started (never our own past verdicts: no circular labels) and proven on-chain links
+    seen in other tokens. Each adjustment carries its evidence (tokens, outcomes and when they were measured)."""
+    if v1.get("score") is None or not memory:
+        return _apply(v1, [], [])
+    adj, caps = [], []
+    dep = memory.get("deployer") or {}
+    if dep.get("rugged", 0) >= 2:
+        adj.append({"code": "rug_history", "points": -RUG_HISTORY_POINTS,
+                    "why": f"deployer{' or its dev group' if dep.get('group') else ''}: {dep['rugged']} of "
+                           f"{dep.get('labelled', 0)} earlier tokens rugged (market outcome)",
+                    "evidence": _tokens(dep.get("list"))})
+        caps.append(f"soft: {dep['rugged']} earlier tokens of this deployer rugged")
+    regulars = [s for s in memory.get("seen_wallets") or [] if s.get("rugged", 0) >= 2]
+    if len(regulars) >= 2:
+        adj.append({"code": "rugged_regulars", "points": -RUGGED_REGULARS_POINTS,
+                    "why": f"{len(regulars)} top holders were each top holders of 2+ tokens that later rugged",
+                    "evidence": [{"wallet": s["wallet"], "tokens": _tokens(s.get("list"))} for s in regulars[:5]]})
+    proven = [c for c in memory.get("clusters") or [] if c.get("level") == "proven"]
+    if proven:
+        adj.append({"code": "recurring_cluster", "points": -CLUSTER_POINTS,
+                    "why": f"{len(proven[0]['wallets'])} current holders were one proven operator in another token",
+                    "evidence": [{"token": c.get("token"), "wallets": c.get("wallets"), "at": c.get("at")}
+                                 for c in proven[:5]]})
+    return _apply(v1, adj, caps)
+
+
 def evaluate(v1, memory):
     """{model id: {"score", "band", "gates", "adjustments"}} for every model, from the crawlmeme-1 verdict."""
     base = {"score": v1.get("score"), "band": v1.get("band"), "gates": list(v1.get("gates") or []),
             "adjustments": []}
-    return {"crawlmeme-1": base, "crawlmeme-2": _v2(v1, memory)}
+    return {"crawlmeme-1": base, "crawlmeme-2": _v2(v1, memory), "crawlmeme-3": _v3(v1, memory)}
 
 
 def rescore(result, model=None):
