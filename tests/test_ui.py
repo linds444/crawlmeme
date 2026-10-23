@@ -158,6 +158,12 @@ class TestBuild(unittest.TestCase):
                        "setPointerCapture", "same-block packs", "qs.get('chain')"):
             self.assertIn(marker, self.index, marker)
 
+    def test_english_unless_chosen(self):
+        with open(I18N, encoding="utf-8") as f:
+            src = f.read()
+        self.assertNotIn("navigator.language", src)        # the browser language never switches the site
+        self.assertIn("set(e.target.value, true)", src)     # only a picker choice is remembered
+
     def test_copy_share_card_only_where_the_browser_can(self):
         self.assertIn("if(navigator.clipboard&&navigator.clipboard.write&&window.ClipboardItem)", self.index)
 

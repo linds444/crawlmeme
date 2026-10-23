@@ -31,7 +31,7 @@ shape:
 - **To add a language**, add its code to `LANGS`, then a column to every row. A missing translation falls back to
   English, never to an empty string. `tests/test_ui.py` enforces the column count, no duplicate keys and valid
   placeholders.
-- **Choice order:** `?lang=`, then the saved choice, then the browser language, then English. The script loads
+- **English is the default for everyone.** Another language appears only when chosen: `?lang=` for one page view, or the picker (remembered). The browser language is never used to switch automatically. The script loads
   synchronously in `<head>` so it reads `?lang=` before the scanner rewrites its URL.
 
 Things the bundled page forced, and how the layer handles them:

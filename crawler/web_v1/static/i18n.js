@@ -13,14 +13,15 @@
  * Numbers, addresses, tickers and prices are never translated: only whole strings that match.
  * Adding a language: add its code to LANGS and NAME, then its column to each entry. A missing entry falls back to
  * English, never to an empty string.
- * Choice: ?lang=xx, then the saved choice (localStorage), then the browser language, then English.
+ * English is the default for everyone. Another language only when chosen explicitly: ?lang=xx for that page view,
+ * or the picker (remembered in localStorage). The browser language is never used to switch automatically.
  */
 (function () {
   'use strict';
   var LANGS = ['en', 'zh', 'es', 'fr', 'de', 'id', 'fil', 'vi'];
   var NAME = {en: 'English', zh: '简体中文', es: 'Español', fr: 'Français', de: 'Deutsch', id: 'Bahasa Indonesia',
               fil: 'Filipino', vi: 'Tiếng Việt'};
-  var KEY = 'cm_lang';
+  var KEY = 'cm_lang_v2';   // v2: choices saved by the old browser-language default are dropped
 
   // [en, zh, es, fr, de, id, fil, vi]
   var P = [
@@ -750,16 +751,13 @@
     var q = (new URLSearchParams(location.search).get('lang') || '').toLowerCase();
     if (LANGS.indexOf(q) >= 0) return q;
     try { var s = localStorage.getItem(KEY); if (LANGS.indexOf(s) >= 0) return s; } catch (e) {}
-    var nav = (navigator.language || 'en').toLowerCase();
-    if (nav.indexOf('tl') === 0) return 'fil';
-    for (var i = 0; i < LANGS.length; i++) if (nav.indexOf(LANGS[i]) === 0) return LANGS[i];
     return 'en';
   }
-  function set(l) {
+  function set(l, remember) {   // remember: only a choice made in the picker is saved
     lang = LANGS.indexOf(l) >= 0 ? l : 'en';
     col = LANGS.indexOf(lang);
-    document.documentElement.lang = lang === 'fil' ? 'fil' : lang;
-    try { localStorage.setItem(KEY, lang); } catch (e) {}
+    document.documentElement.lang = lang;
+    if (remember) try { if (lang === 'en') localStorage.removeItem(KEY); else localStorage.setItem(KEY, lang); } catch (e) {}
     walk(document.body);
     var sels = document.querySelectorAll('select[data-lang-select]');
     for (var i = 0; i < sels.length; i++) sels[i].value = lang;
@@ -782,7 +780,7 @@
         var o = document.createElement('option'); o.value = LANGS[j]; o.textContent = NAME[LANGS[j]]; s.appendChild(o);
       }
       s.value = lang;
-      s.addEventListener('change', function (e) { set(e.target.value); });
+      s.addEventListener('change', function (e) { set(e.target.value, true); });
       slots[i].appendChild(s);
     }
   }
