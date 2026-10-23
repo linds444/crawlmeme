@@ -6,10 +6,9 @@ from http.server import ThreadingHTTPServer
 from unittest import mock
 
 import fakes  # noqa: F401  (before server: no real RPC)
-import opmem
-import replay
-import server
-
+from crawler import opmem
+from crawler import replay
+from crawler import server
 DAY, H = 86400, 3600
 NOW = 1_800_000_000
 T = ["0x" + f"{i:040x}" for i in range(1, 200)]
@@ -109,7 +108,7 @@ class TestMigration(unittest.TestCase):
         self.assertEqual({c: scan[c] for c, _ in opmem.MARKET_COLUMNS}, {c: None for c, _ in opmem.MARKET_COLUMNS})
 
     def test_header_has_fdv(self):
-        import engine
+        from crawler import engine
         self.assertEqual(engine._header({"fdv_usd": 5.0, "mcap_usd": 4.0})["fdv_usd"], 5.0)
 
 
@@ -293,7 +292,7 @@ class TestFetch(unittest.TestCase):
         with mock.patch.object(replay.market, "_ds", return_value=pairs):
             self.assertEqual(replay.fetch_mcaps("solana", [mint]), {mint: 42.0})
         with mock.patch.object(replay.market, "_ds") as ds:
-            self.assertEqual(replay.fetch_mcaps("base", [T[0]]), {})
+            self.assertEqual(replay.fetch_mcaps("ethereum", [T[0]]), {})
             ds.assert_not_called()
 
 
@@ -408,7 +407,9 @@ class TestServer(unittest.TestCase):
                 mock.patch.object(replay, "Checker") as checker:
             self.assertIsNone(server.start_replay_checker())
             checker.assert_not_called()
-            self.assertEqual(self.get("/replay")[0], 404)
+            code, body, _ = self.get("/replay")          # the V1 page is off: /replay lands on Phase 13 Rug Replay
+            self.assertEqual(code, 200)
+            self.assertIn(b"rug replay", body)
             self.assertEqual(self.get("/api/replay")[0], 404)
             self.assertFalse(json.loads(self.get("/api/config")[1])["replay"])
         self.assertFalse(any(t.name == "replay-check" for t in threading.enumerate()))
@@ -443,7 +444,7 @@ class TestServer(unittest.TestCase):
         self.assertIn("replay: checks every 60 min", out.getvalue())
 
     def test_page_has_no_banned_words(self):
-        with open(os.path.join(server.ROOT, "replay.html"), encoding="utf-8") as f:
+        with open(os.path.join(server.WEB, "replay.html"), encoding="utf-8") as f:
             page = f.read().lower()
         for w in ("scam", "scammer"):
             self.assertNotIn(w, page)

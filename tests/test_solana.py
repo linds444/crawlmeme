@@ -6,9 +6,8 @@ from unittest import mock
 
 import fakes
 from fakes import ch, engine, market
-from chains import solana as sol
-import detect as d
-
+from crawler.chains import solana as sol
+from crawler import detect as d
 SOL_TOKEN = sol.b58encode(bytes([7]) * 32)
 SOL_CURVE = sol.b58encode(bytes([8]) * 32)
 SOL_WALLETS = [sol.b58encode(bytes([20 + i]) * 32) for i in range(12)]
@@ -37,7 +36,7 @@ def patched_chain(mod, token, wallets, entries, history, bal=None):
     p("_post", side_effect=fakes._no_network)
     p("get_launch", side_effect=lambda t: {"block": LAUNCH_SLOT, "curve": curve, "deployer": "deployer",
                                            "tx": "launch"} if t == token else None)
-    p("token_facts", side_effect=lambda t, l: {"supply": SUPPLY, "transfers": [], "excluded": {curve},
+    p("token_facts", side_effect=lambda t, l, deadline=None: {"supply": SUPPLY, "transfers": [], "excluded": {curve},
                                                "market": {curve}, "reserve": SUPPLY - base["circulating"],
                                                "base": base})
     p("classify_entries", side_effect=lambda t, trs, ws: {w: entries[w] for w in ws})

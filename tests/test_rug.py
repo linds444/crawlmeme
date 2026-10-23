@@ -5,8 +5,8 @@ from unittest import mock
 
 import fakes
 from fakes import ch, engine, market
-from chains import solana as sol
-import detect as d
+from crawler.chains import solana as sol
+from crawler import detect as d
 from test_detect import Scenario, BUNDLER, CURVE, LAUNCH_BLOCK, LAUNCH_TS, DEPLOYER
 import test_solana as ts
 
@@ -166,7 +166,10 @@ class TestRugInScan(unittest.TestCase):
                 mock.patch.object(market, "fetch_market", return_value=header or {}), \
                 mock.patch.object(engine.d, "rug_projection",
                                   side_effect=None if rug else (lambda *a, **k: None),
-                                  wraps=d.rug_projection if rug else None):
+                                  wraps=d.rug_projection if rug else None), \
+                mock.patch.object(engine.impact, "marker",
+                                  side_effect=None if rug else (lambda *a, **k: None),
+                                  wraps=engine.impact.marker if rug else None):
             events = []
             res = engine.scan(fakes.TOKEN, events.append)
             calls = {n: getattr(ch, n).call_count for n in ADAPTER_CALLS}

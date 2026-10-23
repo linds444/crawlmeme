@@ -1,22 +1,16 @@
 """Stability under load: SQLite (WAL, busy_timeout, shared lock), 503 busy (queue, memory), history cap
-Pons, _SCAN limit by transfers, paginated getLogs, bot and site on busy. No network."""
+Pons, _SCAN limit by transfers, paginated getLogs, site on busy. No network."""
 import io, json, os, sqlite3, tempfile, threading, time, unittest, urllib.error, urllib.request
 from unittest import mock
 from http.server import ThreadingHTTPServer
 
 import fakes
 from fakes import ch
-import alerts_recheck as ar
-import db
-import engine
-import memguard
-import server
-import test_alerts_recheck as tar
-from alerts_store import AlertsStore
-from recent_store import RecentStore
-from rewards_store import RewardsStore
-from bot import api as bot_api, text as T
-from test_bot import FakeAPI, make, private, drain, RH
+from crawler import db
+from crawler import engine
+from crawler import memguard
+from crawler import server
+from crawler.recent_store import RecentStore
 
 
 class TestSqlite(unittest.TestCase):
@@ -24,7 +18,7 @@ class TestSqlite(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = os.path.join(self.tmp.name, "d.db")
-        self.stores = [RecentStore(self.path), AlertsStore(self.path), RewardsStore(self.path)]
+        self.stores = [RecentStore(self.path), RecentStore(self.path)]   # two stores on one file
 
     def tearDown(self):
         for s in self.stores:
@@ -32,14 +26,13 @@ class TestSqlite(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_wal_timeout_shared_lock(self):
-        rs, al, rw = self.stores
+        rs, al = self.stores
         self.assertEqual(rs.db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
         self.assertEqual(al.db.execute("PRAGMA busy_timeout").fetchone()[0], 5000)
         self.assertIs(rs._lock, al._lock)
-        self.assertIs(al._lock, rw._lock)
 
     def test_concurrent_writers_no_lock_errors(self):
-        rs, al, rw = self.stores
+        rs, al = self.stores
         errors = []
 
         def run(fn):
@@ -51,15 +44,15 @@ class TestSqlite(unittest.TestCase):
 
         res = lambda i: {"token": f"0x{i:040x}", "band": "SAFE", "score": 80, "header": {"ticker": "T"}}
         jobs = [lambda i: rs.record(res(i)),
-                lambda i: al.watch(i, f"0x{i:040x}", "robinhood", now=int(time.time())),
-                lambda i: rw.set_meta(f"k{i}", {"v": i})]
-        ts = [threading.Thread(target=run, args=(f,)) for f in jobs for _ in range(2)]
+                lambda i: al.record(res(i + 1000))]
+        ts = [threading.Thread(target=run, args=(f,)) for f in jobs for _ in range(3)]
         for t in ts:
             t.start()
         for t in ts:
             t.join()
         self.assertEqual(errors, [])
         self.assertEqual(len(rs.recent(50)), 50)
+        self.assertEqual(al.db.execute("SELECT count(*) FROM recent_scans").fetchone()[0], 120)   # both writers landed
 
     def test_other_process_writer_waits_not_fails(self):
         """Another connection holds a write for 0.5 s: the store waits (busy_timeout) instead of failing with database is locked."""
@@ -239,7 +232,7 @@ class TestMemguard(unittest.TestCase):
                 self.assertFalse(memguard.over(live=1, cap=3))
                 self.assertFalse(memguard.over(live=2, cap=3))
                 self.assertTrue(memguard.over(live=3, cap=3))     # no queue
-                self.assertTrue(memguard.over(live=1))            # cap 0 (alerts rechecks) — busy above the soft one
+                self.assertTrue(memguard.over(live=1))            # cap 0 (background work) — busy above the soft one
             self.assertEqual(dropped, [1])                         # useless relief — no more often than RELIEVE_IDLE
             self.assertEqual(memguard._state["pause"], memguard.RELIEVE_IDLE)
             with mock.patch.object(memguard, "rss_mb", return_value=250):
@@ -316,7 +309,7 @@ class TestServerBusy(unittest.TestCase):
         self.fakes = fakes.patched()
         self.fakes.__enter__()
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = mock.patch.dict(os.environ, {"DRAW_DB_PATH": os.path.join(self.tmp.name, "t.db"),
+        self.env = mock.patch.dict(os.environ, {"LOCAL_DB_PATH": os.path.join(self.tmp.name, "t.db"),
                                                 "MEMORY_SOFT_LIMIT_MB": "0"})
         self.env.__enter__()
 
@@ -326,10 +319,9 @@ class TestServerBusy(unittest.TestCase):
                 break
             time.sleep(0.05)
         with server._stores_lock:
-            for stores in (server._recent_stores, server._rw_stores):
-                for st in stores.values():
-                    st.close()
-                stores.clear()
+            for st in server._recent_stores.values():
+                st.close()
+            server._recent_stores.clear()
         self.env.__exit__(None, None, None)
         self.fakes.__exit__(None, None, None)
         self.tmp.cleanup()
@@ -371,13 +363,13 @@ class TestServerBusy(unittest.TestCase):
         self.assertIn("result", r)
         with self.full():
             code, d, _ = self.request("/api/scan", {"token": fakes.TOKEN})      # 10-minute cache
-            self.assertEqual((code, d), (200, {"job": jid}))
+            self.assertEqual((code, d["job"]), (200, jid))
             with server._lock:                                                 # a scan of the same token already running
                 server.JOBS["run1"] = {"token": fakes.OTHER, "chain": "robinhood", "events": [], "done": False,
                                        "result": None, "error": None, "ts": time.time()}
                 server.BY_TOKEN[fakes.OTHER] = "run1"
             code, d, _ = self.request("/api/scan", {"token": fakes.OTHER})
-            self.assertEqual((code, d), (200, {"job": "run1"}))
+            self.assertEqual((code, d["job"]), (200, "run1"))
 
     def test_active_counter_returns_to_zero(self):
         self.scan_done()
@@ -418,18 +410,6 @@ class TestServerBusy(unittest.TestCase):
         self.assertEqual(tail, ", last min: 1 started, 1 busy")
         self.assertEqual(server.scan_stats()[1], ", last min: 0 started, 0 busy")
 
-    def test_rewards_db_failure_is_503_and_scan_lives(self):
-        locked = sqlite3.OperationalError("database is locked")
-        with mock.patch.dict(os.environ, {"REWARDS_ENABLED": "true"}), \
-                mock.patch.object(server, "rewards_store", side_effect=locked):
-            code, d, _ = self.request("/api/rewards/status")
-            self.assertEqual((code, d), (503, {"error": "temporarily unavailable"}))
-            code, _, _ = self.request("/api/rewards/history?kind=burns")
-            self.assertEqual(code, 503)
-        _, r = self.scan_done()
-        self.assertIn("result", r)
-        self.assertEqual(self.request("/health")[0], 200)
-
     def test_recent_db_failure_does_not_break_scan(self):
         with mock.patch.object(server, "recent_store", side_effect=sqlite3.OperationalError("database is locked")):
             _, r = self.scan_done()
@@ -452,38 +432,6 @@ class TestPollingLoad(TestServerBusy):
             with e:
                 return e.code, json.loads(e.read()), dict(e.headers)
 
-    def test_rewards_status_cached(self):
-        import rewards_service as rs
-        calls = []
-        real = rs.status_json
-        with mock.patch.dict(os.environ, {"REWARDS_ENABLED": "true"}), \
-                mock.patch.object(rs, "status_json", side_effect=lambda *a, **k: calls.append(1) or real(*a, **k)):
-            code, a, h = self.request("/api/rewards/status")
-            self.assertEqual(code, 200)
-            self.assertEqual(h["cache-control"], "public, max-age=30")
-            code, b, _ = self.request("/api/rewards/status")
-            self.assertEqual(len(calls), 1)                          # second — from memory, no SQLite
-            self.assertEqual({**a, "now": None}, {**b, "now": None})
-            self.assertIn("now", b)
-            with mock.patch.object(server, "STATUS_TTL", 0):
-                self.request("/api/rewards/status")
-            self.assertEqual(len(calls), 2)
-
-    def test_status_error_not_cached(self):
-        with mock.patch.dict(os.environ, {"REWARDS_ENABLED": "true"}):
-            with mock.patch.object(server, "rewards_store", side_effect=sqlite3.OperationalError("database is locked")):
-                self.assertEqual(self.request("/api/rewards/status")[0], 503)
-            self.assertEqual(self.request("/api/rewards/status")[0], 200)
-
-    def test_draw_status_and_config_cached(self):
-        import draw_service as ds
-        with mock.patch.object(ds, "status_json", return_value={"enabled": False}) as st:
-            for _ in range(3):
-                code, d, h = self.request("/api/draw/status")
-            self.assertEqual((code, d, h["cache-control"], st.call_count), (200, {"enabled": False}, "public, max-age=30", 1))
-        code, _, h = self.request("/api/config")
-        self.assertEqual((code, h["cache-control"]), (200, "public, max-age=30"))
-
     def test_recent_cached_15s(self):
         self.request("/api/recent")
         with mock.patch.object(server, "recent_store", side_effect=AssertionError("SQLite")):
@@ -501,9 +449,7 @@ class TestPollingLoad(TestServerBusy):
             self.assertEqual(self.scan_as(fakes.TOKEN, ip)[0], 200)             # running scan or cache — not a new one
             self.assertEqual(self.scan_as("0x" + "9" * 40, {"CF-Connecting-IP": "198.51.100.1"})[0], 200)
             self.assertEqual(self.scan_as("0x" + "8" * 40, ip | {"User-Agent": "crawlscan-bot"})[0], 200)
-            with mock.patch.dict(os.environ, {"ALERTS_API_SECRET": "s3cret"}):
-                self.assertEqual(self.scan_as("0x" + "7" * 40, ip | {"X-Alerts-Secret": "s3cret"})[0], 200)
-                self.assertEqual(self.scan_as("0x" + "6" * 40, ip | {"X-Alerts-Secret": "wrong"})[0], 429)
+            self.assertEqual(self.scan_as("0x" + "7" * 40, ip | {"X-Alerts-Secret": "anything"})[0], 429)   # no bypass
 
     def test_rate_window(self):
         with mock.patch.dict(server._RATE, clear=True):
@@ -516,71 +462,10 @@ class TestPollingLoad(TestServerBusy):
             server._rate_take(None, 160.5)                           # no limit
 
     def test_scan_client(self):
-        with mock.patch.dict(os.environ, {"ALERTS_API_SECRET": "s"}):
-            self.assertIsNone(server.scan_client({"X-Alerts-Secret": "s"}, "1.1.1.1"))
-            self.assertEqual(server.scan_client({"CF-Connecting-IP": "2.2.2.2"}, "10.0.0.1"),
-                             ("2.2.2.2", server.SCAN_RATE_PER_MIN))
-            self.assertEqual(server.scan_client({"User-Agent": "crawlscan-bot"}, "10.0.0.1"),
-                             ("bot:10.0.0.1", server.SCAN_RATE_BOT_PER_MIN))
-
-
-class TestRecheckMemory(unittest.TestCase):
-
-    def test_skips_when_memory_high(self):
-        tmp = tempfile.TemporaryDirectory()
-        st = AlertsStore(os.path.join(tmp.name, "r.db"))
-        clock, scanned, logs = tar.Clock(), [], []
-        st.watch(1, tar.T1, "robinhood", now=int(clock()))
-        high = [True]
-        rc = ar.Rechecker(lambda: st, lambda t: scanned.append(t) or tar.result(t), lambda r: None, None,
-                          live_count=lambda: 0, clock=clock, sleep=clock.sleep, log=logs.append,
-                          cfg={"recheck_min": 15, "max_per_hour": 60}, memory_high=lambda: high[0])
-        rc.tick()
-        self.assertEqual(scanned, [])
-        self.assertIn("alerts: recheck skipped: memory high, 1 waiting", logs)
-        high[0] = False
-        rc.tick()
-        self.assertEqual(scanned, [tar.T1])
-        st.close()
-        tmp.cleanup()
-
-
-class TestBotBusy(unittest.TestCase):
-
-    def test_api_503_busy(self):
-        body = json.dumps(server.BUSY).encode()
-        err = urllib.error.HTTPError("u", 503, "busy", {}, io.BytesIO(body))
-        with mock.patch.object(bot_api.urllib.request, "urlopen", side_effect=err):
-            with self.assertRaises(bot_api.Busy) as cm:
-                bot_api.CrawlScan("https://x.test").scan(RH)
-        self.assertEqual(str(cm.exception), server.BUSY["message"])
-
-    def test_scan_sends_secret_and_429_is_busy(self):
-        seen = []
-
-        def urlopen(req, timeout=None):
-            seen.append(dict(req.header_items()))
-            raise urllib.error.HTTPError("u", 429, "rl", {}, io.BytesIO(json.dumps(server.RATE_LIMITED).encode()))
-
-        with mock.patch.object(bot_api.urllib.request, "urlopen", side_effect=urlopen):
-            with self.assertRaises(bot_api.Busy):
-                bot_api.CrawlScan("https://x.test", alerts_secret="s3").scan(RH)
-            with self.assertRaises(bot_api.Busy):
-                bot_api.CrawlScan("https://x.test").scan(RH)
-        self.assertEqual(seen[0].get("X-alerts-secret"), "s3")
-        self.assertNotIn("X-alerts-secret", seen[1])
-        self.assertEqual(seen[0].get("User-agent"), "crawlscan-bot")
-
-    def test_bot_shows_busy_text(self):
-        class BusyAPI(FakeAPI):
-            def scan(self, token):
-                raise bot_api.Busy(server.BUSY["message"])
-
-        bot, tg, _ = make(api=BusyAPI())
-        bot.handle_update(private(RH))
-        drain(bot)
-        self.assertEqual(tg.of("editMessageText")[-1]["text"], T.SITE_BUSY)
-        self.assertIn("Scanner is busy, try again in a few seconds", T.SITE_BUSY)
+        self.assertEqual(server.scan_client({"CF-Connecting-IP": "2.2.2.2"}, "10.0.0.1"),
+                         ("2.2.2.2", server.SCAN_RATE_PER_MIN))
+        self.assertEqual(server.scan_client({"User-Agent": "crawlscan-bot"}, "10.0.0.1"),
+                         ("bot:10.0.0.1", server.SCAN_RATE_BOT_PER_MIN))
 
 
 class TestFrontendBusy(unittest.TestCase):

@@ -5,8 +5,8 @@ from http.server import ThreadingHTTPServer
 
 import fakes
 from fakes import market
-import server
-from chains import solana as sol
+from crawler import server
+from crawler.chains import solana as sol
 
 NOW = 1_800_000_000
 HOUR = 3600

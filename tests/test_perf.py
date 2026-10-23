@@ -6,11 +6,9 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fakes
 from fakes import ch, engine
-from chains import priority
-import early
-import rewards_service as rs
-import server
-
+from crawler.chains import priority
+from crawler import early
+from crawler import server
 KEYS = ("holders", "holders_total", "circulating", "operators", "links", "packs", "score", "band", "parts",
         "gates", "metrics", "headline", "reason", "rug", "unread", "reserve", "reserve_ok")
 NEW = [fakes.wallet(i) for i in range(20, 24)]      # new buyers in the tail
@@ -300,7 +298,7 @@ class TestSwitchesOff(TransferCacheBase):
             self.assertEqual(priority.background_rps(), 0)
             self.assertEqual(priority.background_scale(8), 1.0)
             with priority.background():
-                self.assertFalse(priority.is_background())               # rewards / early — not background, as before
+                self.assertFalse(priority.is_background())               # early — not background, as before
         with mock.patch.dict(os.environ, {"BACKGROUND_RPS": ""}):
             self.assertEqual(priority.background_rps(), 2.0)
             self.assertEqual(priority.background_scale(8), 4.0)
@@ -378,17 +376,6 @@ class TestBackground(unittest.TestCase):
                 bgw.assert_called_once()
                 self.assertEqual(mw.call_count, 2)
 
-    def test_rewards_scheduler_is_critical(self):
-        """The rewards scheduler (draw, burns, payouts) is critical: not background, doesn't wait for live scans."""
-        seen = []
-        sch = rs.Scheduler(store=None, cfg={"token": "x", "dev_wallets": [], "invalid_dev_wallets": []})
-        with mock.patch.dict(os.environ, {"BACKGROUND_RPS": "2"}), \
-                mock.patch.object(sch, "tick", side_effect=lambda: (
-                    seen.append((priority.is_critical(), priority.is_background())), sch.stop())):
-            sch.run()
-        self.assertEqual(seen, [(True, False)])
-        self.assertFalse(priority.is_critical())
-
     def test_critical_does_not_wait_for_live_scans(self):
         """Live scans run continuously: a critical request passes immediately (own limit and global), a background one waits."""
         for a in (ch, fakes.engine.sol):
@@ -439,16 +426,6 @@ class TestBackground(unittest.TestCase):
             self.assertEqual(priority.critical_rps(), 0)
         with mock.patch.dict(os.environ, {"CRITICAL_RPS": "x"}):
             self.assertEqual(priority.critical_rps(), 2.0)
-
-    def test_rewards_scheduler_ignores_memory_guard(self):
-        """The memory guard doesn't block the draw: the rewards scheduler doesn't ask memguard."""
-        import memguard
-        sch = rs.Scheduler(store=None, cfg={"token": "x", "dev_wallets": [], "invalid_dev_wallets": []})
-        with mock.patch.object(memguard, "over", side_effect=AssertionError("memguard")) as over, \
-                mock.patch.object(rs, "pending_days", return_value=[]), \
-                mock.patch.object(sch, "_next_check", 10 ** 12):
-            sch.tick(now=1)
-        over.assert_not_called()
 
     def test_background_scan_budget_scaled(self):
         deadlines = []

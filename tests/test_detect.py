@@ -1,7 +1,7 @@
 """Tests for detect.py on synthetic data (unittest, no network)."""
 import os, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import detect as d
+from crawler import detect as d
 
 SUPPLY = 10_000             # 1% of supply = 100
 ZERO = "0x" + "0" * 40

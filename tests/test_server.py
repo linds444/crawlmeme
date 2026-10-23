@@ -5,7 +5,7 @@ from http.server import ThreadingHTTPServer
 
 import fakes
 from fakes import ch
-import server
+from crawler import server
 
 
 class TestServer(unittest.TestCase):
@@ -26,9 +26,9 @@ class TestServer(unittest.TestCase):
             server.JOBS.clear(); server.BY_TOKEN.clear()
         self.fakes = fakes.patched()
         self.fakes.__enter__()
-        # the feed writes to DRAW_DB_PATH: in tests — a temp file, not ./data/draw.db
+        # the feed writes to LOCAL_DB_PATH: in tests — a temp file, not ./data/draw.db
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = mock.patch.dict(os.environ, {"DRAW_DB_PATH": os.path.join(self.tmp.name, "t.db")})
+        self.env = mock.patch.dict(os.environ, {"LOCAL_DB_PATH": os.path.join(self.tmp.name, "t.db")})
         self.env.__enter__()
 
     def tearDown(self):
@@ -72,7 +72,7 @@ class TestServer(unittest.TestCase):
             self.assertEqual((code, d["solana"]), (200, on))
 
     def test_config_trade_templates(self):
-        import trade
+        from crawler import trade
         with mock.patch.dict(os.environ, {"TRADE_URL_ROBINHOOD": "", "TRADE_URL_SOLANA": ""}):
             _, d, _ = self.request("/api/config")
         self.assertEqual(d["trade"], trade.DEFAULTS)
@@ -162,7 +162,7 @@ class TestPageCache(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.page = os.path.join(self.tmp.name, "index.html")
         self.write(b"<html>v1</html>", 1_800_000_000)
-        p = mock.patch.object(server, "ROOT", self.tmp.name)
+        p = mock.patch.object(server, "WEB", self.tmp.name)
         p.start()
         self.addCleanup(p.stop)
 
@@ -231,7 +231,7 @@ class TestPageCache(unittest.TestCase):
         hc, hb, hh = self.head("/health")
         self.assertEqual((hc, hb, hh["cache-control"], hh["content-length"]), (200, b"", "no-store", "12"))
         self.assertEqual(self.head("/nope")[:2], (404, b""))
-        with mock.patch.object(server, "ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+        with mock.patch.object(server, "WEB", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "crawler", "web_v1")):
             gc, gb, gh = self.get("/favicon.svg")
             hc, hb, hh = self.head("/favicon.svg")
         self.assertEqual((hc, hb, hh["cache-control"], hh["content-length"]),
@@ -243,7 +243,7 @@ class TestPageCache(unittest.TestCase):
         self.assertEqual(self.get()[:2], (200, b"<h1>rh-crawler</h1>"))
 
     def test_icons_cached_as_before(self):
-        with mock.patch.object(server, "ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+        with mock.patch.object(server, "WEB", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "crawler", "web_v1")):
             code, _, h = self.get("/favicon.svg")
         self.assertEqual((code, h["cache-control"]), (200, "public, max-age=86400"))
         self.assertNotIn("etag", h)

@@ -8,10 +8,16 @@ from contextlib import ExitStack
 from unittest import mock
 
 os.environ.setdefault("CRAWLER_RPC", "http://rpc.invalid")   # .env won't overwrite: load_dotenv doesn't touch already set vars
+import tempfile as _tempfile
+# local stores (feed, alerts, history index) of every test run go to a throwaway folder, never ./data
+os.environ.setdefault("LOCAL_DB_PATH", os.path.join(_tempfile.mkdtemp(prefix="crawl-tests-"), "crawl.db"))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from chains import robinhood as ch   # noqa: E402
-import engine, market                # noqa: E402
+from crawler.chains import robinhood as ch   # noqa: E402
+from crawler import engine, market                # noqa: E402
+from crawler.chains import solana as _sol          # noqa: E402
+_sol.HELIUS_KEY = ""   # offline: Helius parsed history (wallet histories, funding) is never called for real
+os.environ["MEMORY_ENABLED"] = "off"   # offline: the Supabase memory brain is only reached by tests that enable it
 
 TOKEN = "0x" + "ab" * 20
 OTHER = "0x" + "cd" * 20              # not Pons V2: get_launch returns None
@@ -67,7 +73,7 @@ def patched(history_fn=history, launch=True):
     market.clear_cache()
     stack.enter_context(mock.patch.dict(ch._SCAN, clear=True))     # scan transfer history (early buyers)
     stack.enter_context(mock.patch.dict(ch._LAUNCH, clear=True))
-    srv = sys.modules.get("server")
+    srv = sys.modules.get("crawler.server")
     if srv is not None:   # server: per-IP scan limit and status cache — from a clean slate in each test
         stack.enter_context(mock.patch.dict(srv._RATE, clear=True))
         stack.enter_context(mock.patch.dict(srv._RESP, clear=True))
@@ -85,6 +91,8 @@ def patched(history_fn=history, launch=True):
     p("is_contract", side_effect=lambda addrs: {a: False for a in addrs})
     p("token_meta", return_value={"name": "Synthetic", "symbol": "SYN"})
     stack.enter_context(mock.patch.object(market, "fetch_market", return_value={}))
+    stack.enter_context(mock.patch.object(market, "fetch_chart", return_value={}))      # forensics: no price candles
+    stack.enter_context(mock.patch.object(engine, "_funding_reader", return_value=None))   # forensics: no funding
     stack.enter_context(mock.patch.object(market, "native_usd", return_value=None))   # ETH/USD (Flap on the curve)
     return stack
 

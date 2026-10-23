@@ -5,10 +5,10 @@ from unittest import mock
 
 import fakes
 from fakes import ch, engine, market
-from chains import robinhood as rh
-from chains import solana as sol
-import detect as d
-import recent_store
+from crawler.chains import robinhood as rh
+from crawler.chains import solana as sol
+from crawler import detect as d
+from crawler import recent_store
 from test_rug import TestRugProjection, signals
 import test_solana as ts
 
@@ -97,8 +97,11 @@ class TestEngine(unittest.TestCase):
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from bot import text as T
-        self.assertEqual((T.ESTABLISHED_HEADLINE, T.ESTABLISHED_TEXT, T.TOO_ESTABLISHED),
-                         (d.ESTABLISHED_HEADLINE, d.ESTABLISHED_TEXT, d.TOO_ESTABLISHED))
+        self.assertEqual((T.TOO_ESTABLISHED, T.TOO_ACTIVE), (d.TOO_ESTABLISHED, d.TOO_ACTIVE))
+        card, markup = T.scan_card({"token": "0x" + "ab" * 20, "chain": "robinhood", "band": d.TOO_ESTABLISHED,
+                                    "headline": d.ESTABLISHED_HEADLINE, "header": {}})
+        self.assertIn(d.ESTABLISHED_HEADLINE, card)            # the engine's own words, no score
+        self.assertIsNone(markup)                              # nothing to watch, no report link given
 
     def test_recent_feed_entry(self):
         res, _, _ = scan(BIG_OLD)
@@ -246,7 +249,8 @@ class TestLateAndLimited(unittest.TestCase):
 
         def facts(token, launch):
             f = real_facts(token, launch)
-            return f | {"reserve": 1, "reserve_ok": True}            # negligible reserve: impact ≈ 100%
+            # negligible reserve: impact ≈ 100% (venues None: the sell-impact block prices the same reserve)
+            return f | {"reserve": 1, "reserve_ok": True, "venues": None}
         def classify(token, trs, wallets):
             out = fakes.classify_entries(token, trs, wallets)
             for w in fakes.WALLETS[:5]:

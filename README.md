@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="static/favicon.svg" width="96" alt="CRAWLSCAN">
+<img src="crawler/web_v1/static/favicon.svg" width="96" alt="CRAWLSCAN">
 
 # CRAWLSCAN
 
@@ -20,9 +20,16 @@ Telegram bot: [@CrawlScanBot](https://t.me/CrawlScanBot)
 [![license](https://img.shields.io/badge/license-MIT-9fd9ff?style=flat-square\&labelColor=07090b)](LICENSE)
 [![tests](https://img.shields.io/github/actions/workflow/status/0xPunisher/crawlscan/tests.yml?branch=main\&style=flat-square\&labelColor=07090b\&label=tests)](https://github.com/0xPunisher/crawlscan/actions/workflows/tests.yml)
 
-![crawlscan](banner12.jpg)
+![crawlscan](docs/img/banner12.jpg)
 
 </div>
+
+> [!NOTE]
+> **This is a private, self-hosted fork of CrawlScan V1 (MIT, original copyright retained in [LICENSE](LICENSE)),
+> being extended phase by phase.** Progress, verified support and measurements:
+> [Phase 1 audit](docs/phase-1-audit.md) · [Phase 2 chains](docs/phase-2-chains.md) · [Phase 3 holders](docs/phase-3-holders.md) · [Phase 4 event stream](docs/events.md) · [Phase 5 forensics](docs/phase-5-forensics.md) · [Phase 6 graph](docs/phase-6-graph.md) · [Phase 7 memory](docs/phase-7-memory.md) · [Phase 8 scoring](docs/phase-8-scoring.md) · [Phase 9 sell impact](docs/phase-9-sell-impact.md) · [Phase 10 launch bundles](docs/phase-10-bundles.md) · [Phase 11 memory brain](docs/phase-11-memory.md) · [Phase 12 launch radar](docs/phase-12-radar.md) · [Phase 13 historical proof](docs/phase-13-proof.md) · [Phase 14 terminal UI](docs/phase-14-ui.md) · [Phase 15 Telegram bot](docs/phase-15-telegram.md).
+> Run: `python -m crawler.server` · tests: `python -m unittest discover -s tests` · mainnet checks:
+> `CRAWLER_LIVE=1 python -m unittest tests/test_live_launchpads.py`. The text below describes upstream V1.
 
 > [!IMPORTANT]
 > ## THIS IS CRAWLSCAN V1, THE FIRST PUBLIC VERSION
@@ -70,7 +77,7 @@ CRAWLSCAN crawls the token's on-chain activity, analyses its top holders, follow
 
 The goal is to make a complex on-chain investigation understandable in seconds, without requiring users to manually inspect hundreds of transactions.
 
-![crawlscan](screen1.jpg)
+![crawlscan](docs/img/screen1.jpg)
 
 ### The core idea
 
@@ -137,7 +144,7 @@ The crawlers start by building the token's real holder picture directly from on-
 
 In both cases bonding curves, liquidity pools, lockers, routers, tax processors and other infrastructure addresses are excluded, so the analysis focuses on actual wallets. Ownership is measured against the **real circulating float**, not against raw supply that sits locked in a curve or pool.
 
-![crawlscan](screen4.jpg)
+![crawlscan](docs/img/screen4.jpg)
 
 ### What CRAWLSCAN checks
 
@@ -152,7 +159,7 @@ Each top holder is analysed across several behavioural dimensions.
 
 The biggest holders are read first, so the wallets that matter most for the verdict are always covered. If a wallet's entry cannot be read reliably, it is marked as **unread** and left out of the signals instead of being guessed.
 
-![crawlscan](screen2.jpg)
+![crawlscan](docs/img/screen2.jpg)
 
 ### How wallets are linked
 
@@ -180,7 +187,7 @@ Packs are treated as **behavioural signals**, not proof of common ownership, so 
 
 Exchanges, bridges, routers and other high-traffic addresses are never used to link wallets, so unrelated users are not glued together.
 
-![crawlscan](screen5.jpg)
+![crawlscan](docs/img/screen5.jpg)
 
 ## Verdict
 
@@ -209,8 +216,8 @@ Hard rules cover cases where a weighted score alone would be misleading:
 > **Complex on-chain investigation -> one understandable verdict.**
 
 <div align="center">
-<img src="assets/scan.png" alt="CRAWLSCAN scan result" width="74%">
-<img src="assets/mobile.jpg" alt="CRAWLSCAN scan result on mobile" width="21%">
+<img src="docs/img/scan.png" alt="CRAWLSCAN scan result" width="74%">
+<img src="docs/img/mobile.jpg" alt="CRAWLSCAN scan result on mobile" width="21%">
 </div>
 
 ## Price chart and probably rug
@@ -325,7 +332,7 @@ cp .env.example .env
 # SOLANA_RPC=https://solana-mainnet.g.alchemy.com/v2/<your-key>
 # SOLANA_ENABLED=true          # Solana scans are off unless this is true
 # FLAP_ENABLED=true            # Flap tokens on Robinhood Chain are off unless this is true
-python3 server.py
+python3 -m crawler.server
 ```
 
 Open `http://localhost:8000`, or go straight to:
@@ -340,20 +347,19 @@ python3 -m unittest discover -s tests -v
 
 ## Telegram bot
 
-[@CrawlScanBot](https://t.me/CrawlScanBot) is a separate service in `bot/` (standard library only). It is a thin client of the CRAWLSCAN API: it never talks to a blockchain, it starts a scan on the website and turns the result into a short verdict with a link to the full report and a Trade on Axiom button.
+A private Telegram bot (Phase 15, [docs/phase-15-telegram.md](docs/phase-15-telegram.md)) runs as a webhook on the
+site: no separate server. Only the Telegram user ids in `TG_ALLOWED_USERS` are served.
 
-* In a private chat: send a token address (Robinhood Chain or Solana), or `/scan <address>`. `/start` and `/help` explain the bot and the verdict, `/rewards` shows the next burn and draw and the last winner.
-* **Alerts**: tap **Watch** under a verdict, or open **Watchlist** and add a token with **New**. Watch up to 3 tokens for 7 days and get a message when the verdict moves into or out of `DANGER`, a probably rug warning appears or disappears, the biggest operator starts selling, or the early buyers exit. Remove a token from the Watchlist or with the button under any alert. `/watch`, `/watchlist` and `/unwatch` work too.
-* In groups: only `/scan <address>` and `/rewards`.
+* Paste a token address, or `/scan <address>`: compact risk score, main warning, largest operator with wallet links,
+  top holder and deployer links, and the full report link. `/watch`, `/watchlist`, `/unwatch`, `/wallet <address>`,
+  `/radar`, `/status`, `/help`.
+* **Alerts** on watched tokens: verdict worse, probably-rug changes, largest operator selling, early buyers exiting,
+  coordinated wallets, the token reaching the radar. For fresh launches: a known suspicious deployer launching again,
+  a smart crew entering. Deduplicated, with cooldowns, priorities and a per-chat hourly cap.
 
-```sh
-# .env
-# TG_BOT_TOKEN=<token from @BotFather>
-# CRAWLSCAN_API=https://crawlscan.fun   # optional, this is the default
-python3 bot/main.py
-```
-
-Only one copy of the bot can poll Telegram at a time.
+Setup: create a bot with @BotFather, set `TG_BOT_TOKEN`, `TG_ALLOWED_USERS` and `TG_WEBHOOK_SECRET` in Vercel,
+redeploy, then call `GET /api/cron/telegram` once with the cron secret to register the webhook. For local
+development without a public URL, `python3 bot/main.py` polls Telegram with the same bot code.
 
 ## Roadmap
 

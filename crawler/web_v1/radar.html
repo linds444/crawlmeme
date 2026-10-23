@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launch Radar · CRAWLMEME</title>
+<meta name="description" content="Fresh memecoins whose latest CrawlMeme scan meets distribution and risk criteria, updated live.">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" href="/favicon.png">
+<script src="/i18n.js"></script>
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#07090b;--card:#0b1013;--card2:#090c0f;--line:#141b20;--line2:#1c252b;--text:#c9d1d6;--hi:#eef1f3;--dim:#8a959c;
+  --mute:#5f6b72;--green:#00c805;--red:#ff4d4d;--amber:#ffb020;--blue:#9fd9ff;
+  --mono:'JetBrains Mono',ui-monospace,monospace;--sans:'Geist',Helvetica,Arial,sans-serif}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;font-family:var(--sans)}
+a{color:var(--dim);text-decoration:none} a:hover{color:#fff}
+.wrap{max-width:1280px;margin:0 auto;padding:0 32px}
+header{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(7,9,11,0.92);backdrop-filter:blur(8px);z-index:5}
+.head{height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.brand{display:flex;align-items:center;gap:10px;color:var(--hi);font-family:var(--mono);font-weight:500;letter-spacing:0.08em}
+.brand img{width:28px;height:28px}
+.live{font-family:var(--mono);font-size:12px;color:var(--dim);display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(0,200,5,.6);animation:pulse 2s infinite}
+.dot.off{background:var(--red);animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(0,200,5,.5)}70%{box-shadow:0 0 0 8px rgba(0,200,5,0)}100%{box-shadow:0 0 0 0 rgba(0,200,5,0)}}
+h1{font-size:40px;font-weight:500;letter-spacing:-0.03em;color:var(--hi);margin:40px 0 6px}
+.sub{color:var(--dim);font-size:15px;line-height:1.5;margin:0 0 24px;max-width:760px}
+.filters{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--card2)}
+.filters label{display:flex;flex-direction:column;gap:5px;font-family:var(--mono);font-size:11px;color:var(--mute)}
+.filters select,.filters input{background:var(--card);border:1px solid var(--line2);border-radius:8px;color:var(--hi);font-family:var(--mono);font-size:12.5px;padding:7px 8px;width:100%}
+.filters .check{flex-direction:row;align-items:center;gap:8px;color:var(--text);font-size:12px;padding-top:18px}
+.tabs{display:flex;gap:8px;margin:22px 0 12px;font-family:var(--mono);font-size:12.5px}
+.tabs button{background:none;border:1px solid var(--line2);border-radius:999px;color:var(--dim);padding:6px 14px;cursor:pointer;font-family:inherit;font-size:inherit}
+.tabs button.on{color:var(--hi);border-color:var(--hi)}
+.tbl{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card2)}
+.row{display:grid;grid-template-columns:minmax(160px,1.5fr) 62px 96px 100px 92px 92px 80px 70px 70px minmax(170px,1.6fr) 92px;gap:10px;align-items:center;padding:11px 16px;font-family:var(--mono);font-size:12.5px;border-top:1px solid var(--line)}
+.row.hdr{border-top:0;font-size:11px;color:var(--mute)}
+.tok{display:flex;flex-direction:column;gap:3px;min-width:0}
+.tok a{color:var(--hi);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tok span{color:var(--mute);font-size:11px}
+.band{display:inline-flex;gap:6px;align-items:center}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;border:1px solid}
+.why{font-size:11.5px;line-height:1.45;color:var(--dim)}
+.why b{font-weight:500}
+.act button{background:none;border:1px solid var(--line2);border-radius:8px;color:var(--text);padding:5px 9px;cursor:pointer;font-family:var(--mono);font-size:11.5px}
+.act button:disabled{opacity:.5;cursor:wait}
+.empty{padding:36px 16px;text-align:center;color:var(--dim);font-family:var(--mono);font-size:13px}
+.note{color:var(--mute);font-family:var(--mono);font-size:11.5px;line-height:1.6;margin:14px 0 48px}
+.neg{color:var(--red)} .pos{color:var(--green)}
+@media (max-width:1100px){
+  .row.hdr{display:none}
+  .row{grid-template-columns:1fr 1fr;gap:6px 12px}
+  .row>*[data-k]::before{content:attr(data-k) " ";color:var(--mute);font-size:10.5px}
+  .tok,.why,.act{grid-column:1/-1}
+}
+@media (max-width:640px){.wrap{padding:0 16px} h1{font-size:30px}}
+</style>
+</head>
+<body>
+<header><div class="wrap head">
+  <a class="brand" href="/"><img src="/favicon.svg" alt="">CRAWLMEME</a>
+  <div class="live"><span class="dot" id="dot"></span><span id="updated">loading…</span></div>
+  <span data-lang-slot="1"></span>
+</div></header>
+<main class="wrap">
+  <h1>launch radar</h1>
+  <p class="sub">Fresh tokens whose latest real CrawlMeme scan meets your distribution and risk filters. Each row shows when it was scanned. Tokens drop off or are downgraded when the verdict slips, operators or the launch bundle sell, the market turns against the scan, the token collapses, or the data goes stale.</p>
+  <form class="filters" id="f" autocomplete="off">
+    <label>chain<select name="chain"><option value="">all</option><option value="robinhood">Robinhood</option><option value="solana">Solana</option><option value="base">Base</option><option value="bsc">BNB</option></select></label>
+    <label>launchpad<select name="launchpad"><option value="">all</option><option value="pons">Pons</option><option value="clanker">Clanker</option><option value="fourmeme">four.meme</option><option value="flap">Flap</option><option value="bankr">Bankr</option><option value="dex">DEX pool</option></select></label>
+    <label>window<select name="window"><option value="60">60 min</option><option value="180">3 h</option><option value="360">6 h</option><option value="1440">24 h</option><option value="10080">7 days</option></select></label>
+    <label>verdicts<select name="bands"><option value="CLEAN,OK">clean + ok</option><option value="CLEAN">clean only</option><option value="CLEAN,OK,RISKY">up to risky</option></select></label>
+    <label>min score<input name="score_min" type="number" min="0" max="100" step="1" placeholder="any"></label>
+    <label>max age (min)<input name="age_max" type="number" min="0" step="1" placeholder="any"></label>
+    <label>min market cap $<input name="mcap_min" type="number" min="0" step="1000" placeholder="any"></label>
+    <label>max market cap $<input name="mcap_max" type="number" min="0" step="1000" placeholder="any"></label>
+    <label>min liquidity $<input name="liq_min" type="number" min="0" step="500" placeholder="any"></label>
+    <label>max bundle % supply<input name="bundle_max" type="number" min="0" max="100" step="1" placeholder="any"></label>
+    <label>max operator % float<input name="operator_max" type="number" min="0" max="100" step="1" placeholder="any"></label>
+    <label>min change since scan %<input name="change_min" type="number" step="1" placeholder="any"></label>
+    <label class="check"><input name="complete" type="checkbox" value="1"> full coverage only</label>
+  </form>
+  <div class="tabs" role="tablist">
+    <button type="button" data-show="active" class="on" role="tab">on radar <span id="n-on"></span></button>
+    <button type="button" data-show="removed" role="tab">dropped <span id="n-off"></span></button>
+  </div>
+  <div class="tbl" id="tbl"></div>
+  <p class="note">Data: CrawlMeme's own scans, stored in its memory. New launches are discovered and scanned every 30 minutes, and you can rescan any token here. Prices: GeckoTerminal, then DexScreener, then DexPaprika. Bundle = launch supply still concentrated in launch wallets (% of supply); operator = largest linked group (% of float). This is not financial advice: a clean scan describes the holders at scan time, not the future.</p>
+</main>
+<script>
+(function(){
+  const REFRESH_MS = 15000;
+  const BC = {CLEAN:'#00c805', OK:'#9fd9ff', RISKY:'#ffb020', DANGER:'#ff4d4d'};
+  const CHAIN = {robinhood:'Robinhood', solana:'Solana', base:'Base', bsc:'BNB'};
+  const PCT = new Set(['bundle_max','operator_max','change_min']);
+  const form = document.getElementById('f'), tbl = document.getElementById('tbl');
+  let show = 'active', last = null, timer = null, busy = false;
+
+  const el = (tag, css, text) => { const e = document.createElement(tag); if (css) e.className = css; if (text != null) e.textContent = text; return e; };
+  const usd = v => v == null ? '—' : '$' + (v >= 1e6 ? (v/1e6).toFixed(2)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'k' : v.toFixed(v >= 10 ? 0 : 2));
+  const pct = v => v == null ? '—' : (v*100).toFixed(v*100 >= 10 ? 0 : 1) + '%';
+  const ago = iso => { if (!iso) return '—'; const s = (Date.now() - Date.parse(iso)) / 1000;
+    return s < 60 ? Math.max(0, Math.round(s)) + 's ago' : s < 3600 ? Math.round(s/60) + 'm ago' : (s/3600).toFixed(1) + 'h ago'; };
+  const short = a => a && a.length > 12 ? a.slice(0, 6) + '…' + a.slice(-4) : (a || '');
+
+  // filters live in the URL so a view can be bookmarked or shared
+  function readUrl(){
+    const u = new URLSearchParams(location.search);
+    for (const e of form.elements) {
+      if (!e.name || !u.has(e.name)) continue;
+      let v = u.get(e.name);
+      if (PCT.has(e.name) && v !== '') v = String(Math.round(parseFloat(v) * 100));
+      if (e.type === 'checkbox') e.checked = v === '1'; else e.value = v;
+    }
+    if (u.get('show') === 'removed') show = 'removed';
+  }
+  function query(){
+    const u = new URLSearchParams();
+    for (const e of form.elements) {
+      if (!e.name) continue;
+      if (e.type === 'checkbox') { if (e.checked) u.set(e.name, '1'); continue; }
+      if (e.value === '') continue;
+      u.set(e.name, PCT.has(e.name) ? String(parseFloat(e.value) / 100) : e.value);
+    }
+    if (show !== 'active') u.set('show', show);
+    return u;
+  }
+
+  function render(data){
+    tbl.textContent = '';
+    if (!data.available) { tbl.append(el('div', 'empty', 'Radar unavailable: ' + (data.reason || 'memory is off'))); return; }
+    document.getElementById('n-on').textContent = show === 'active' ? '(' + data.items.length + ')' : '';
+    document.getElementById('n-off').textContent = show === 'removed' ? '(' + data.items.length + ')' : '';
+    const hdr = el('div', 'row hdr');
+    ['token','age','verdict','scanned','market cap','liquidity','since scan','bundle','operator','status',''].forEach(h => hdr.append(el('span', '', h)));
+    tbl.append(hdr);
+    if (!data.items.length) {
+      tbl.append(el('div', 'empty', show === 'active'
+        ? 'Nothing on the radar for these filters in the last ' + (data.params.window >= 1440 ? (data.params.window/1440) + ' day(s)' : data.params.window + ' minutes') + '. Widen the window or relax a filter.'
+        : 'Nothing dropped in this window.'));
+      return;
+    }
+    for (const t of data.items) {
+      const r = el('div', 'row');
+      const tok = el('div', 'tok'), a = el('a', '', (t.ticker ? '$' + t.ticker : short(t.token)));
+      a.href = '/?ca=' + encodeURIComponent(t.token); a.title = t.token;
+      tok.append(a, el('span', '', (CHAIN[t.chain] || t.chain) + ' · ' + (t.launchpad || 'dex') + ' · ' + short(t.token)));
+      const age = el('span', '', t.age_min == null ? '—' : t.age_min < 60 ? Math.round(t.age_min) + 'm' : (t.age_min/60).toFixed(1) + 'h'); age.dataset.k = 'age';
+      const band = el('span', 'band'); band.dataset.k = 'verdict';
+      const p = el('span', 'pill', (t.band || '?').toLowerCase()); p.style.color = BC[t.band] || '#8a959c'; p.style.borderColor = (BC[t.band] || '#8a959c') + '66';
+      band.append(p, el('span', '', t.score == null ? '' : String(t.score)));
+      const sc = el('span', '', ago(t.scanned_at)); sc.title = t.scanned_at ? new Date(t.scanned_at).toUTCString() : ''; sc.dataset.k = 'scanned';
+      const mc = el('span', '', usd(t.mcap_usd)); mc.dataset.k = 'mcap';
+      const lq = el('span', '', usd(t.liquidity_usd)); lq.dataset.k = 'liq';
+      const ch = el('span', t.price_change == null ? '' : t.price_change < 0 ? 'neg' : 'pos',
+                    t.price_change == null ? '—' : (t.price_change >= 0 ? '+' : '') + (t.price_change*100).toFixed(0) + '%');
+      ch.dataset.k = 'since scan'; ch.title = t.market_at ? 'market at ' + new Date(t.market_at).toUTCString() : '';
+      const bd = el('span', '', pct((t.bundle || {}).concentrated_share)); bd.dataset.k = 'bundle';
+      const op = el('span', '', pct(t.largest_operator_share)); op.dataset.k = 'operator';
+      const why = el('div', 'why');
+      const st = el('b', '', t.status === 'active' ? 'active' : t.status);
+      st.style.color = t.status === 'active' ? 'var(--green)' : t.status === 'downgraded' ? 'var(--amber)' : 'var(--red)';
+      why.append(st);
+      if (t.reasons.length) why.append(document.createTextNode(' · ' + t.reasons.join(' · ')));
+      if (t.coverage && t.coverage !== 'full') why.append(document.createTextNode(' · coverage ' + t.coverage));
+      const act = el('div', 'act'), btn = el('button', '', 'rescan'); btn.type = 'button';
+      btn.addEventListener('click', () => rescan(t, btn));
+      act.append(btn);
+      r.append(tok, age, band, sc, mc, lq, ch, bd, op, why, act);
+      tbl.append(r);
+    }
+  }
+
+  // a real scan now (bypasses the 10-minute result cache); the radar picks it up from memory on the next refresh
+  async function rescan(t, btn){
+    btn.disabled = true; btn.textContent = 'scanning…';
+    try {
+      const r = await fetch('/api/scan', {method: 'POST', headers: {'content-type': 'application/json', 'accept': 'text/event-stream'},
+                                          body: JSON.stringify({token: t.token, chain: t.chain, fresh: true})});
+      const body = await r.text();
+      btn.textContent = !r.ok ? 'busy, retry' : /"error":\s*"[^"]/.test(body.split('event: result').pop()) ? 'failed' : 'done';
+    } catch (e) { btn.textContent = 'failed'; }
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'rescan'; load(); }, 1500);
+  }
+
+  async function load(){
+    if (busy || document.hidden) return;
+    busy = true;
+    const q = query();
+    history.replaceState(null, '', q.toString() ? '?' + q : location.pathname);
+    try {
+      const r = await fetch('/api/radar?' + q, {headers: {accept: 'application/json'}});
+      if (!r.ok) throw new Error(r.status);
+      last = await r.json(); render(last);
+      document.getElementById('dot').className = 'dot';
+      document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString() + ' · every 15 s';
+    } catch (e) {
+      document.getElementById('dot').className = 'dot off';
+      document.getElementById('updated').textContent = 'update failed, retrying';
+    } finally { busy = false; }
+  }
+
+  readUrl();
+  document.querySelectorAll('.tabs button').forEach(b => {
+    b.classList.toggle('on', b.dataset.show === show);
+    b.addEventListener('click', () => { show = b.dataset.show; document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b)); load(); });
+  });
+  let deb = null;
+  form.addEventListener('input', () => { clearTimeout(deb); deb = setTimeout(load, 400); });
+  form.addEventListener('submit', e => e.preventDefault());
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+  load();
+  timer = setInterval(load, REFRESH_MS);
+})();
+</script>
+</body></html>

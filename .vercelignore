@@ -1,0 +1,11 @@
+# Not needed by the deployed function (tests, fixtures, docs, CI, local data)
+tests/
+docs/
+scripts/
+data/
+.github/
+**/__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example

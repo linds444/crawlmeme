@@ -9,10 +9,10 @@ from unittest import mock
 
 import fakes
 from fakes import ch, engine, ZERO
-from chains import bankr, flap
-import detect as d
-import opmem
-import early
+from crawler.chains import bankr, flap
+from crawler import detect as d
+from crawler import opmem
+from crawler import early
 import test_flap
 
 BTOKEN = "0x" + "b1" * 18 + "0ba3"          # Bankr token (ba3 suffix)
@@ -561,10 +561,8 @@ class TestHistory(unittest.TestCase):
             self.assertGreater(h["index_eta_s"], 0)
             self.assertTrue(until(lambda: bankr.index_status(BTOKEN)["state"] == "building"))
             gate.set()
-            for _ in range(100):
-                if BTOKEN not in bankr._INDEX_BUILDING:
-                    break
-                _t.sleep(0.01)
+            # the builder thread finishes on its own schedule: wait for it (a loaded test run can take over 1 s)
+            self.assertTrue(until(lambda: BTOKEN not in bankr._INDEX_BUILDING))
             self.assertEqual(bankr.index_status(BTOKEN)["state"], "unavailable")   # failure: no retry within INDEX_RETRY_S
         self.assertEqual([x[:2] for x in started], [(BTOKEN, LAUNCH_BLOCK)])
         self.assertGreater(started[0][2], 3)                                     # history estimate — above the cap
@@ -719,14 +717,14 @@ class TestIndexStability(unittest.TestCase):
         self.assertEqual(self.after, {})
 
     def test_memguard_drops_bankr_index(self):
-        import server, memguard
+        from crawler import server, memguard
         self.assertIn(bankr.drop_caches, memguard._droppers)
         bankr._index_put("0xa", self.ix(1))
         memguard.relieve()
         self.assertEqual(bankr._INDEX, {})
 
     def test_memguard_near(self):
-        import memguard
+        from crawler import memguard
         with mock.patch.object(memguard, "soft_limit_mb", return_value=1000):
             with mock.patch.object(memguard, "rss_mb", return_value=900):
                 self.assertTrue(memguard.near())
@@ -740,7 +738,7 @@ class TestIndexStability(unittest.TestCase):
 
     def test_memguard_near_from_container_limit(self):
         """memfix: soft threshold — 75% of the container limit; index build stops at 85% of soft."""
-        import memguard
+        from crawler import memguard
         with mock.patch.dict(os.environ, {"MEMORY_SOFT_LIMIT_MB": ""}), \
                 mock.patch.object(memguard, "cgroup_limit_mb", return_value=8000):
             self.assertEqual(memguard.soft_limit_mb(), 6000)
@@ -753,7 +751,7 @@ class TestIndexStability(unittest.TestCase):
     def test_build_from_critical_thread_is_background(self):
         """A build started from anywhere (even from a critical thread) runs in the background: yields to live scans and
         does not count against the critical work limit; a critical request does not wait for it."""
-        from chains import priority
+        from crawler.chains import priority
         gate, seen = threading.Event(), []
 
         def build(t, b, ex, est=None):
@@ -780,7 +778,7 @@ class TestIndexStability(unittest.TestCase):
     def test_queue(self):
         """One builds, the rest are queued up to INDEX_QUEUE_MAX in order, a repeat is not added; when full —
         queue_full; position and ETA (remainder of the running one + those ahead + its own)."""
-        from chains import priority
+        from crawler.chains import priority
         gate, seen = threading.Event(), []
 
         def build(t, b, ex, est=None):
@@ -827,7 +825,7 @@ class TestIndexStability(unittest.TestCase):
 
     def test_queue_waits_for_live_scan(self):
         """A live scan is running — a build from the queue does not start until it ends."""
-        from chains import priority
+        from crawler.chains import priority
         seen = []
         with mock.patch.object(bankr, "build_index", side_effect=lambda *a: (seen.append(a[0]), (True, None))[1]):
             with priority.live():
@@ -839,7 +837,7 @@ class TestIndexStability(unittest.TestCase):
 
     def test_eta_by_active_time_and_live_estimate(self):
         """ETA: volume — the first-wave estimate on the fly, speed — by active time (pauses for live scans don't count)."""
-        from chains import priority
+        from crawler.chains import priority
         now = _t.time()
         job = {"started": now - 100, "eta_s": 10 ** 6, "est_total": 10 ** 7, "live0": 5.0,
                "stats": {"logs": 1000, "req": 60, "est_live": 2000}}
@@ -854,7 +852,7 @@ class TestIndexStability(unittest.TestCase):
         gate, seen = threading.Event(), []
 
         def build(t, b, ex, est=None):
-            from chains import priority
+            from crawler.chains import priority
             seen.append(priority.is_background())
             gate.wait(5)
             return True, None
@@ -871,7 +869,7 @@ class TestIndexStability(unittest.TestCase):
         self.assertEqual(bankr.index_status("0xd")["state"], "too_large")
 
     def test_background_read_uses_fewer_workers(self):
-        from chains import priority
+        from crawler.chains import priority
         sizes = []
         real = bankr.ThreadPoolExecutor
 
@@ -890,7 +888,7 @@ class TestIndexStability(unittest.TestCase):
     def test_strict_read_pauses_for_live_scan(self):
         """Strict background: while a live scan runs, not a single new request; a response that arrived during the scan
         is parsed after it; pages are short (ranges by the est estimate), and everything is read to the end."""
-        from chains import priority
+        from crawler.chains import priority
         c = Chain()
         c.page_cap = 5
         log, live_on, first = [], threading.Event(), threading.Event()
@@ -1028,7 +1026,8 @@ class TestTooActive(unittest.TestCase):
             self.assertEqual(off[k], on[k], k)
 
     def test_index_endpoint_off(self):
-        import server, urllib.request, urllib.error
+        import urllib.request, urllib.error
+        from crawler import server
         from http.server import ThreadingHTTPServer
         srv = ThreadingHTTPServer(("127.0.0.1", 0), server.H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -1047,7 +1046,7 @@ class TestTooActive(unittest.TestCase):
 class TestB2Server(unittest.TestCase):
 
     def test_cache_bypassed_when_index_ready(self):
-        import server
+        from crawler import server
         jid = "j1"
         res = {"token": BTOKEN, "partial_scan": {"state": "building"}}
         with mock.patch.dict(server.JOBS, {jid: {"token": BTOKEN, "done": True, "result": res, "ts": _t.time()}}), \
@@ -1058,7 +1057,8 @@ class TestB2Server(unittest.TestCase):
                 self.assertIsNone(server._reuse(BTOKEN, _t.time()))       # index ready — a new, full scan
 
     def test_config_and_index_endpoint(self):
-        import json, server, urllib.request, urllib.error
+        import json, urllib.request, urllib.error
+        from crawler import server
         from http.server import ThreadingHTTPServer
         srv = ThreadingHTTPServer(("127.0.0.1", 0), server.H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -1081,11 +1081,13 @@ class TestB2Server(unittest.TestCase):
             srv.server_close()
 
     def test_partial_not_snapshotted(self):
-        import server
-        with mock.patch.object(server.alerts, "enabled", return_value=True), \
-                mock.patch.object(server, "alerts_store") as st:
-            server.record_snapshot({"token": BTOKEN, "partial_scan": {"state": "building"}})
-        st.assert_not_called()
+        from crawler import tg_alerts
+        with mock.patch.object(tg_alerts, "enabled", return_value=True), \
+                mock.patch.object(tg_alerts.store, "snapshot_swap") as sw, \
+                mock.patch.object(tg_alerts.store, "enqueue", return_value=0):
+            tg_alerts.on_scan({"token": BTOKEN, "chain": "robinhood", "band": "RISKY",
+                               "partial_scan": {"state": "building"}})
+        sw.assert_not_called()   # a partial scan diffed against a full one would raise false alerts
 
 
 class TestB2Bot(unittest.TestCase):
@@ -1106,22 +1108,14 @@ class TestB2Bot(unittest.TestCase):
         self.assertEqual(T.bankr_line(r), "Bankr · META pair · dev vesting 30% (15% unlocked)")
         self.assertEqual(T.bankr_line(self.res(bankr={"pair": {"kind": "eth"}, "vesting": {}})), "Bankr · ETH pair")
         self.assertIsNone(T.bankr_line({"launchpad": None}))
-        self.assertIn("Bankr · ETH pair · dev vesting 15%", T.verdict(self.res()).split("\n")[1])
+        self.assertIn("Bankr · ETH pair · dev vesting 15%", T.scan_card(self.res())[0].split("\n")[1])
 
     def test_partial_line(self):
         from bot import text as T
         msg = "Partial scan: building the full holder history, check again in about a minute"
-        v = T.verdict(self.res(partial_scan={"state": "building", "message": msg}))
+        v = T.scan_card(self.res(partial_scan={"state": "building", "message": msg}))[0]
         self.assertIn("⏳ " + msg, v)
-        self.assertNotIn("Partial", T.verdict(self.res()))
-
-    def test_help_with_bankr(self):
-        from bot import text as T
-        self.assertIn("Pons V2, Flap and Bankr on Robinhood Chain", T.help_text(True, True))
-        self.assertIn("Pons V2 and Bankr on Robinhood Chain", T.help_text(False, True))
-        self.assertEqual(T.help_text(True), T.help_text(True, False))
-        self.assertEqual(T.help_text(False, False), T.HELP)
-
+        self.assertNotIn("Partial", T.scan_card(self.res())[0])
 
 class TestB2Frontend(unittest.TestCase):
     """Built index.html: all Bankr changes are present and behind the server flag (bankrOn from /api/config)."""
@@ -1129,7 +1123,7 @@ class TestB2Frontend(unittest.TestCase):
     def test_built_page(self):
         import json, re
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        src = open(os.path.join(root, "index.html"), encoding="utf-8").read()
+        src = open(os.path.join(root, "crawler", "web_v1", "index.html"), encoding="utf-8").read()
         a = re.search(r'<script type="__bundler/template">', src).end()
         t = json.loads(src[a:src.find("</script>", a)])
         self.assertIn("bankrOn:!!d.bankr", t)

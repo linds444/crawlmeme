@@ -2,9 +2,7 @@
 Usage: python scripts/run_scan.py 0x... [0x... ...]"""
 import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import engine
-
-
+from crawler import engine
 def short(a):
     return f"{a[:6]}…{a[-4:]}" if a else ""
 

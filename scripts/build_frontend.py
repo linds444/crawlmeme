@@ -81,9 +81,12 @@ Run from the repo root: python3 scripts/build_frontend.py
 import json, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC, OUT = os.path.join(ROOT, "design.html"), os.path.join(ROOT, "index.html")
+WEB = os.path.join(ROOT, "crawler", "web_v1")
+SRC, OUT = os.path.join(WEB, "design.html"), os.path.join(WEB, "index.html")
 SAMPLES = {"robinhood": "0xb4bb188e2d0e82ef9dba8b31ffe41855a2feac0f",   # "try a sample" per chain
-           "solana": "fjKUqPWK9m331Y5TZZNFismtqoP2MGWAMHEkB62pump"}
+           "solana": "fjKUqPWK9m331Y5TZZNFismtqoP2MGWAMHEkB62pump",
+           "base": "0xdf5a6a58758093c704fdfe10c9f7ef13e7ca639f",        # Clanker v4
+           "bsc": "0x16568e054800ab305225036bf45c9d52b7d67777"}         # Flap
 X_URL = "https://x.com/0x_Punisher"
 PONS_URL = "https://www.ponsfamily.com/launchpad/0x19dCb63C4d2F29A6f077F094a4f858fC790145e1"
 GITHUB_URL = "https://github.com/0xPunisher/crawlscan"
@@ -1205,7 +1208,7 @@ rep("@media (max-width:640px){\n",
 # rug from the result: red dashed arrow from now to now × level_factor, label and reasons (parts).
 # ---------------------------------------------------------------------------
 CHART_JS = r"""// ---- price chart + probably rug (GET /api/chart after the verdict) ----
-const RUG_LABEL={linked:'linked wallets',transfer:'received by transfer',virgin:'fresh wallets',bundle:'bundle / snipers'};
+const RUG_LABEL={linked:'linked wallets',transfer:'received by transfer',virgin:'fresh wallets',bundle:'bundle / snipers',deployer:'deployer',crew:'crew from other tokens'};
 const MONO_F="'JetBrains Mono',monospace";
 const SUBD='₀₁₂₃₄₅₆₇₈₉';
 const escH=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1228,7 +1231,7 @@ function rugReasons(rug){
   return `<div data-rug-reasons="1" style="display:flex;flex-direction:column;gap:12px;padding:18px 20px 20px;border-top:1px solid #141b20">`
     +`<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 16px;font-family:${MONO_F};font-size:11px;color:#5f6b72"><span>why probably rug</span><span>suspicious supply · ${(rug.share*100).toFixed(1)}% of float</span></div>`
     +rows
-    +`<p style="margin:2px 0 0;font-size:14px;line-height:1.5;color:#8a959c;text-wrap:pretty">If these wallets sell into the current liquidity, the price could fall about ${dropPct(rug)}%.</p></div>`;
+    +`<p style="margin:2px 0 0;font-size:14px;line-height:1.5;color:#8a959c;text-wrap:pretty">A conditional scenario, not a prediction: if these wallets sell into the current liquidity${rug.aggregated?' (all priced pools together)':''}, the price could fall about ${dropPct(rug)}%.</p></div>`;
 }
 const SRC_LABEL={gt:'GeckoTerminal',dexscreener:'DexScreener'};
 const srcLabel=s=>SRC_LABEL[s]||'GeckoTerminal';
@@ -2027,9 +2030,893 @@ rep("  paintEarly(){", r'''  paintTimeline(){   // once per element; the landing
   }
   paintEarly(){''')
 
+# ---------------------------------------------------------------------------
+# CrawlMeme (private fork). Applied last, to the fully patched page:
+#   - name: CRAWLMEME in the title, header logo and footer;
+#   - four chains: Robinhood | Solana | Base | BNB tabs above the input, hero texts name all four;
+#     a 0x address takes the EVM chain of the picked tab (EVM_NET), the server resolves the real chain
+#     (POST /api/scan → "chain"); an address on several chains (409) is scanned on the picked tab's chain
+#     when it is one of them, otherwise the page asks to pick; Basescan / BscScan links;
+#   - no promotion of the upstream project: its token section, hero CA line, PONS link, X account and
+#     Telegram bot are removed (their draw / rewards were deleted in Phase 1); GitHub points to the fork.
+# The Phase 6 Next.js frontend replaces this file; until then these patches are the whole change.
+# ---------------------------------------------------------------------------
+BRAND = "CRAWLMEME"
+FORK_URL = "https://github.com/linds444/crawlmeme"
+CHAIN_COLOR = {"solana": "#9945FF", "base": "#3d7bff", "bsc": "#F0B90B"}
+
+def cut(start, end_marker, tail=""):
+    """Remove t[start-anchor .. end_marker] (both found exactly once after start) plus `tail` right after it."""
+    global t
+    if t.count(start) != 1:
+        sys.exit(f"design.html: cut anchor found {t.count(start)} times: {start[:70]!r}")
+    i = t.find(start)
+    j = t.find(end_marker, i)
+    if j < 0 or not t.startswith(tail, j + len(end_marker)):
+        sys.exit(f"design.html: cut end not found after {start[:70]!r}")
+    t = t[:i] + t[j + len(end_marker) + len(tail):]
+
+rep('<title>CRAWLSCAN</title>', f'<title>{BRAND}</title>')
+rep('>CRAWLSCAN</span>', f'>{BRAND}</span>', count=2)
+
+# upstream project promotion
+cut(f'\n        <a href="{PONS_URL}" target="_blank" rel="noopener" title="CRAWLSCAN on PONS"', '</a>')
+cut(f'\n            <a href="{PONS_URL}" target="_blank" rel="noopener" data-grip="1"', '</a>')
+rep(x_link + "\n" + TELEGRAM_LINK, '', count=2)
+rep(f'<a {ext(GITHUB_URL)} data-grip="1"', f'<a {ext(FORK_URL)} data-grip="1"')
+cut('\n          <span style="display:inline-flex;align-items:center;gap:8px"><span style="color:#00c805">$CrawlScan</span>',
+    '</button></span>')
+cut('      <section id="token"', '</section>', '\n\n')
+rep("let n=2; const next=()=>", "let n=1; const next=()=>")   # «how it works» follows «crawlers at work» (01)
+
+# hero: four chains
+chains_html = ('<span style="white-space:nowrap">Robinhood, <span style="color:#9945FF">Solana</span>, '
+               '<span style="color:#3d7bff">Base</span> and <span style="color:#F0B90B">BNB</span></span>')
+rep('<span style="white-space:nowrap">Robinhood <sc-if value="{{padsOn}}" hint-placeholder-val="{{false}}">'
+    '<span data-launchpads="1">({{padsText}}) </span></sc-if>and <span style="color:#9945FF">Solana</span></span>',
+    chains_html, count=2)
+rep('<span data-grip="1" style="color:#00c805">Robinhood</span><span data-grip="1">and</span>'
+    '<span data-grip="1" style="color:#9945FF">Solana</span><span data-grip="1" style="color:#00c805">memecoins</span>',
+    '<span data-grip="1" style="color:#00c805">Robinhood,</span><span data-grip="1" style="color:#9945FF">Solana,</span>'
+    '<span data-grip="1" style="color:#3d7bff">Base</span><span data-grip="1">and</span>'
+    '<span data-grip="1" style="color:#F0B90B">BNB</span><span data-grip="1" style="color:#00c805">memecoins</span>')
+
+# chain tabs: Base and BNB after Solana (same pill style; variables from netVals)
+def tab(key, label):
+    return (f'<button sc-camel-on-click="{{{{pick{key}}}}}" aria-label="{label}" style="height:30px;padding:0 14px;'
+            f'border-radius:999px;border:1px solid {{{{{key.lower()}Border}}}};background:{{{{{key.lower()}Bg}}}};'
+            f'color:{{{{{key.lower()}Color}}}};font-family:\'JetBrains Mono\',monospace;font-size:12px;cursor:pointer;'
+            f'display:inline-flex;align-items:center;gap:6px" style-hover="color:#ffffff">{label}</button>')
+rep('soon</span></sc-if></button></div>', 'soon</span></sc-if></button>' + tab("Base", "Base") + tab("Bnb", "BNB") + '</div>')
+
+# chain of an address and per-chain texts
+rep("const chainOf=a=>typeof a!=='string'?null:RH_RE.test(a)?'robinhood':SOL_RE.test(a)?'solana':null;",
+    "let EVM_NET='robinhood';   // chain of a 0x address: the picked tab, then the chain the server resolved\n"
+    "const chainOf=a=>typeof a!=='string'?null:RH_RE.test(a)?EVM_NET:SOL_RE.test(a)?'solana':null;")
+rep("const CHAIN_NAME={robinhood:'Robinhood',solana:'Solana'};",
+    "const CHAIN_NAME={robinhood:'Robinhood',solana:'Solana',base:'Base',bsc:'BNB'};")
+rep("const PLACEHOLDER={robinhood:'0x… token contract address',solana:'token mint address (base58)'};",
+    "const PLACEHOLDER={robinhood:'0x… Robinhood token contract address',solana:'token mint address (base58)',"
+    "base:'0x… Base token contract address',bsc:'0x… BNB Chain token contract address'};")
+rep("const EXPLORER={solana:{account:a=>'https://solscan.io/account/'+a,token:a=>'https://solscan.io/token/'+a}};",
+    "const EXPLORER={solana:{account:a=>'https://solscan.io/account/'+a,token:a=>'https://solscan.io/token/'+a},"
+    "base:{account:a=>'https://basescan.org/address/'+a,token:a=>'https://basescan.org/token/'+a},"
+    "bsc:{account:a=>'https://bscscan.com/address/'+a,token:a=>'https://bscscan.com/token/'+a}};")
+rep("a.slice(0,c==='robinhood'?6:4)", "a.slice(0,c==='solana'?4:6)")
+
+rep("""    const rh=st(net==='robinhood'), so=st(net==='solana');
+    const pick=n=>()=>this.setState({net:n,inputError:'',inputNotice:''});""",
+    """    const rh=st(net==='robinhood'), so=st(net==='solana'), ba=st(net==='base'), bn=st(net==='bsc');
+    // a click is an explicit choice: a 0x address is then scanned on that chain
+    const pick=n=>()=>{if(n!=='solana') EVM_NET=n; this.picked=n; this.setState({net:n,inputError:'',inputNotice:''});};""")
+rep("solSoon:this.state.solanaOn===false, pickRh:pick('robinhood'), pickSol:pick('solana'),",
+    "baseColor:ba.c, baseBorder:ba.b, baseBg:ba.g, bnbColor:bn.c, bnbBorder:bn.b, bnbBg:bn.g,\n"
+    "      solSoon:this.state.solanaOn===false, pickRh:pick('robinhood'), pickSol:pick('solana'),\n"
+    "      pickBase:pick('base'), pickBnb:pick('bsc'),")
+
+rep("""        const r=await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:ca})});
+        const d=await r.json().catch(()=>({}));""",
+    """        const post=body=>fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json',accept:'text/event-stream, application/json'},body:JSON.stringify(body)});
+        const isStream=r=>r.ok&&(r.headers.get('content-type')||'').startsWith('text/event-stream');
+        const picked=RH_RE.test(ca)&&this.picked&&this.picked!=='solana'?this.picked:null;   // explicit chain tab
+        let r=await post(picked?{token:ca,chain:picked}:{token:ca});
+        let d=isStream(r)?{}:await r.json().catch(()=>({}));
+        if(r.status===409&&d.error==='ambiguous_chain'){   // same address on several chains: the tab decides
+          const cs=d.chains||[];
+          if(!cs.includes(EVM_NET)){if(!alive()) return; fail('found on '+cs.map(c=>CHAIN_NAME[c]||c).join(' and ')+' — pick the chain above and crawl again'); step(); return;}
+          r=await post({token:ca,chain:EVM_NET}); d=isStream(r)?{}:await r.json().catch(()=>({}));
+        }
+        if(isStream(r)){if(!current()){try{r.body.cancel();}catch(e){} return;} feed.streaming=true; step(); readStream(r); return;}
+        if(r.ok&&d.chain&&d.chain!=='solana'){EVM_NET=d.chain; if(alive()) this.setState({net:d.chain});}""")
+
+# CrawlScan coin: the draw / rewards sections and their status requests go (their API was deleted in Phase 1;
+# the page asked for it on every load and got 404s)
+rep("    this.loadDraw();\n    this.loadRewards();\n", "")
+cut('      <sc-if value="{{rwOn}}" hint-placeholder-val="{{false}}"><section id="rewards"', '</section></sc-if>', '\n\n')
+cut('      <sc-if value="{{drawOn}}" hint-placeholder-val="{{false}}"><section id="draw"', '</section></sc-if>', '\n\n')
+rep("+' $CrawlScan'", "+' tokens'", count=2)
+rep('const ca=text||"0x19dCb63C4d2F29A6f077F094a4f858fC790145e1";', 'const ca=text||"";')   # no project CA to copy
+
+# ---------------------------------------------------------------------------
+# CrawlMeme brand: a peacock spider (Maratus) — raised white-tipped display legs, banded fan, big front eyes.
+# The header mark is crawler/web_v1/static/logo.svg inlined (viewBox → sc-camel-view-box, as the design's SVGs);
+# favicon.svg is the same file. The crawlers on the canvas are drawn as peacock spiders too, one palette per variant.
+# ---------------------------------------------------------------------------
+LOGO_SVG = open(os.path.join(WEB, "static", "logo.svg"), encoding="utf-8").read()
+logo_inline = (LOGO_SVG.replace(' xmlns="http://www.w3.org/2000/svg"', '').replace('viewBox=', 'sc-camel-view-box=')
+               .replace('width="32" height="28" ', 'width="32" height="28" style="display:block;overflow:visible" ')
+               .strip())
+i = t.find('<svg width="30" height="26" sc-camel-view-box="0 0 30 26"')
+j = t.find('</svg>', i)
+if i < 0 or t.count('<svg width="30" height="26" sc-camel-view-box="0 0 30 26"') != 1:
+    sys.exit("design.html: header logo svg not found — build stopped")
+t = t[:i] + logo_inline + t[j + len('</svg>'):]
+
+def replace_method(head, body):
+    """Replace a class method (from `head` to the first line that closes it at two-space indent)."""
+    global t
+    if t.count(head) != 1:
+        sys.exit(f"design.html: method {head!r} found {t.count(head)} times — build stopped")
+    i = t.find(head)
+    j = t.find('\n  }\n', i)
+    t = t[:i] + body.rstrip('\n') + t[j + len('\n  }'):]
+
+replace_method('  drawCrawler(ctx,c){', r"""  drawCrawler(ctx,c){   // CrawlMeme peacock spider: fan behind, body, two big eyes; palette per variant
+    const big=c.kind==='scan', ca=Math.cos(c.ang), sa=Math.sin(c.ang), v=(c.variant||0)%4, t=performance.now()/1000, TAU=Math.PI*2;
+    const PAL=[{fan:['#ff7a1a','#19d3ff','#2b3bff'],stripe:'#ff3355',glow:'#19d3ff'},
+               {fan:['#ffd23f','#21e6a0','#0f8f6a'],stripe:'#ff7a1a',glow:'#21e6a0'},
+               {fan:['#ff5ad1','#8a5bff','#3a1fd1'],stripe:'#ffd23f',glow:'#b07bff'},
+               {fan:['#ff3355','#ff9f1a','#1fa7ff'],stripe:'#2b3bff',glow:'#ff9f1a'}][v];
+    const P=(lx,ly)=>({x:c.x+ca*lx-sa*ly,y:c.y+sa*lx+ca*ly});
+    ctx.lineCap='round'; ctx.lineJoin='round'; ctx.setLineDash([]);
+    const knees=[];
+    c.legs.forEach(l=>{
+      const hip=P(Math.cos(l.a)*c.L*0.22,Math.sign(Math.sin(l.a))*c.Wd*0.3);
+      const f=l.pos, dx=f.x-hip.x, dy=f.y-hip.y, d=Math.hypot(dx,dy)||1;
+      l.lifted=d>c.R*2.6;   // foot still anchored to an element scrolled far away: the leg is up until it steps
+      if(l.lifted) return;
+      const seg=c.R*l.k*0.62, h=Math.max(6,Math.sqrt(Math.max(0,seg*seg-d*d/4)));
+      let nx=-dy/d, ny=dx/d; const mx=(hip.x+f.x)/2, my=(hip.y+f.y)/2;
+      if(nx*(mx-c.x)+ny*(my-c.y)<0){nx=-nx;ny=-ny;}
+      const k={x:mx+nx*h*0.55,y:my+ny*h*0.55}; knees.push(k);
+      ctx.lineWidth=big?2.2:1.7; ctx.strokeStyle='rgba(255,216,176,0.85)';
+      ctx.beginPath(); ctx.moveTo(hip.x,hip.y); ctx.lineTo(k.x,k.y); ctx.stroke();
+      ctx.lineWidth=big?1.6:1.2; ctx.strokeStyle='rgba(255,236,214,0.7)';
+      ctx.beginPath(); ctx.moveTo(k.x,k.y); ctx.lineTo(f.x,f.y); ctx.stroke();
+    });
+    ctx.fillStyle=PAL.glow; knees.forEach(k=>{ctx.beginPath(); ctx.arc(k.x,k.y,big?2:1.6,0,TAU); ctx.fill();});
+    ctx.save(); ctx.translate(c.x,c.y); ctx.rotate(c.ang);
+    // fan (abdomen flap) at the rear, opening and closing slowly like a courtship display
+    const R=c.Wd*1.15*(0.9+0.1*Math.sin(t*2.2+c.phase)), fx=-c.L*0.04;
+    const half=(r,col)=>{ctx.fillStyle=col; ctx.beginPath(); ctx.ellipse(fx,0,r*0.9,r,0,Math.PI/2,Math.PI*1.5); ctx.closePath(); ctx.fill();};
+    half(R,PAL.fan[0]); half(R*0.8,PAL.fan[1]); half(R*0.56,PAL.fan[2]); half(R*0.32,PAL.fan[0]);
+    ctx.fillStyle=PAL.stripe; ctx.beginPath(); ctx.moveTo(fx,-c.Wd*0.07); ctx.lineTo(fx-R*0.9,-c.Wd*0.11); ctx.lineTo(fx-R*0.9,c.Wd*0.11); ctx.lineTo(fx,c.Wd*0.07); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle='rgba(7,9,11,0.7)'; ctx.lineWidth=0.8; ctx.beginPath(); ctx.ellipse(fx,0,R*0.9,R,0,Math.PI/2,Math.PI*1.5); ctx.stroke();
+    // body and eyes
+    ctx.fillStyle='#100c0a'; ctx.strokeStyle='rgba(0,200,5,0.85)'; ctx.lineWidth=1.1;
+    ctx.beginPath(); ctx.ellipse(c.L*0.2,0,c.L*0.26,c.Wd*0.44,0,0,TAU); ctx.fill(); ctx.stroke();
+    const glow=8+4*Math.sin(t*3+c.phase);
+    [-1,1].forEach(s=>{const ex=c.L*0.34, ey=s*c.Wd*0.16, r=c.Wd*0.14;
+      ctx.save(); ctx.shadowColor=PAL.glow; ctx.shadowBlur=glow; ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(ex,ey,r,0,TAU); ctx.fill(); ctx.restore();
+      ctx.strokeStyle=G; ctx.lineWidth=0.8; ctx.beginPath(); ctx.arc(ex,ey,r,0,TAU); ctx.stroke();
+      ctx.fillStyle='#ffffff'; ctx.beginPath(); ctx.arc(ex+r*0.3,ey-r*0.3,r*0.32,0,TAU); ctx.fill();});
+    ctx.restore();
+    // white-tipped feet
+    ctx.save(); ctx.shadowColor=PAL.glow; ctx.shadowBlur=8; ctx.fillStyle='#ffffff';
+    c.legs.forEach(l=>{if(l.lifted) return; ctx.beginPath(); ctx.arc(l.pos.x,l.pos.y,(big?2.4:1.8)+(l.t<1?1:0),0,TAU); ctx.fill();});
+    ctx.restore();
+  }
+""")
+
+# Phase 4: live event stream. The scan request asks for Server-Sent Events (docs/events.md) and plays each event as
+# it arrives; the final `result` frame replaces the /api/result request (on Vercel that request may land on another
+# instance and rescan). A stream cut before `result` continues by polling /api/events from the last event id.
+rep("    if(!chainOf(ca)){fail('not a token address'); step(); return;}   // same rule as engine.chain_of, no request",
+    r"""    const readStream=async r=>{   // Server-Sent Events from POST /api/scan
+      const rd=r.body.getReader(), dec=new TextDecoder(); let buf='';
+      const onFrame=f=>{let ev='message', data='';
+        f.split('\n').forEach(line=>{if(line.startsWith('event:')) ev=line.slice(6).trim(); else if(line.startsWith('data:')) data+=line.slice(5).trim(); else if(line.startsWith('id:')) feed.after=(+line.slice(3).trim())+1;});
+        if(!data) return; let d; try{d=JSON.parse(data);}catch(e){return;}
+        if(ev==='job'){feed.job=d.job; this.m.job=d.job; if(d.chain&&d.chain!=='solana'){EVM_NET=d.chain; this.setState({net:d.chain});}}
+        else if(ev==='scan') feed.queue.push(d);
+        else if(ev==='result') feed.result=d;};
+      try{
+        for(;;){
+          const {done,value}=await rd.read(); if(done) break;
+          if(!current()){try{rd.cancel();}catch(e){} return;}
+          buf+=dec.decode(value,{stream:true}).replace(/\r/g,'');
+          let k; while((k=buf.indexOf('\n\n'))>=0){onFrame(buf.slice(0,k)); buf=buf.slice(k+2);}
+        }
+      }catch(err){/* connection cut: handled below */}
+      if(!current()) return;
+      if(feed.result){feed.apiDone=true; return;}
+      feed.streaming=false;
+      if(feed.job) poll(); else fail('server unreachable');   // cut before the end: poll from the last event id
+    };
+    if(!chainOf(ca)){fail('not a token address'); step(); return;}   // same rule as engine.chain_of, no request""")
+rep("""      for(let k=0;k<20&&current();k++){
+        try{
+          const r=await fetch(`/api/result?job=${feed.job}`); const d=await r.json();""",
+    """      for(let k=0;k<20&&current();k++){
+        if(feed.result){const d=feed.result; if(d.error) this.handleEvent({type:'error',detail:d.error}); else this.handleResult(normalizeResult(d.result)); return;}
+        if(feed.streaming&&k<10){await new Promise(res=>setTimeout(res,300)); continue;}   // the result frame is on its way
+        try{
+          const r=await fetch(`/api/result?job=${feed.job}`); const d=await r.json();""")
+
+# ---------------------------------------------------------------------------
+# All holders: under the result, every holder from /api/holders, 100 at a time («show more»), largest first:
+# rank, address (click copies; explorer link where the chain has one), % of float, «analysed» for the examined top.
+# Painted into its own element (like the early buyers panel), so the template only gains one container.
+# ---------------------------------------------------------------------------
+rep('earlyRef=React.createRef();', 'earlyRef=React.createRef(); allRef=React.createRef();')
+rep('earlyRef:this.earlyRef', 'earlyRef:this.earlyRef, allRef:this.allRef')
+rep('feed.job=d.job; poll(); step();', 'feed.job=d.job; this.m.job=d.job; poll(); step();')
+rep('handleResult(r){this.m.result=r; this.loadChart(); this.loadEarly(); this.watchIndex(r); this.bump();}',
+    'handleResult(r){this.m.result=r; this.loadChart(); this.loadEarly(); this.watchIndex(r); this.bump(); this.loadAll();}\n'
+    r"""  loadAll(tries=0){   // every holder (/api/holders), a page at a time; painted straight into allRef
+    const m=this.m, el=this.allRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.loadAll(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{};
+    if(!m.job||raw.band==='TOO_ESTABLISHED'||raw.band==='TOO_ACTIVE') return;
+    const MONO="font-family:'JetBrains Mono',monospace", ex=EXPLORER[chainOf(m.ca)], st={offset:0};
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    const title=mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','all holders');
+    const count=mk('span',MONO+';font-size:12px;color:#8a959c','loading…');
+    head.append(title,count);
+    const list=mk('div','display:flex;flex-direction:column;margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f;overflow:hidden');
+    const more=mk('button',MONO+';margin-top:12px;align-self:flex-start;height:36px;padding:0 16px;border:1px solid #1c252b;border-radius:8px;background:#0b1013;color:#9fd9ff;cursor:pointer;display:none','show 100 more');
+    const wrap=mk('div','display:flex;flex-direction:column'); wrap.append(head,list,more); el.append(wrap);
+    const pct=v=>v==null?'—':(v*100>=0.01?(v*100).toFixed(2)+'%':'<0.01%');
+    const row=x=>{
+      const r=mk('div','display:grid;grid-template-columns:56px minmax(0,1fr) 90px 80px;align-items:center;gap:10px;padding:9px 14px;border-top:1px solid #10161a;'+MONO+';font-size:12.5px');
+      const addr=ex?mk('a','color:#dfe5e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',x.wallet):mk('span','color:#dfe5e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:copy',x.wallet);
+      addr.title=x.wallet;
+      if(ex){addr.href=ex.account(x.wallet); addr.target='_blank'; addr.rel='noopener';}
+      else addr.addEventListener('click',()=>{try{navigator.clipboard.writeText(x.wallet); addr.style.color='#00c805'; setTimeout(()=>addr.style.color='#dfe5e8',1200);}catch(e){}});
+      r.append(mk('span','color:#5f6b72','#'+x.rank),addr,mk('span','color:#eef1f3;text-align:right',pct(x.share)),
+               mk('span','color:'+(x.analysed?'#00c805':'#3a454c')+';text-align:right;font-size:11px',x.analysed?'analysed':''));
+      return r;
+    };
+    const page=()=>{more.disabled=true;
+      fetch(`/api/holders?job=${encodeURIComponent(m.job)}&offset=${st.offset}&limit=100`,NO_STORE)
+        .then(r=>r.ok?r.json():null).catch(()=>null).then(d=>{
+          more.disabled=false;
+          if(this.m!==m) return;
+          if(!d||!d.done||d.total==null){count.textContent='holder list unavailable'; return;}
+          st.offset+=d.items.length;
+          count.textContent=d.total.toLocaleString('en-US')+' holders'+(d.complete?'':' · lower bound (largest accounts only)');
+          d.items.forEach(x=>list.appendChild(row(x)));
+          more.style.display=st.offset<d.total?'block':'none';
+        });};
+    more.addEventListener('click',page); page();
+  }""")
+rep('<div data-early-box="1" style="display:{{earlyDisplay}};margin-top:56px;flex-direction:column;gap:18px">'
+    '<div ref="{{earlyRef}}" style="display:flex;flex-direction:column;gap:18px"></div></div>',
+    '<div data-early-box="1" style="display:{{earlyDisplay}};margin-top:56px;flex-direction:column;gap:18px">'
+    '<div ref="{{earlyRef}}" style="display:flex;flex-direction:column;gap:18px"></div></div>\n\n'
+    '        <div ref="{{allRef}}" data-all-holders="1" style="margin-top:56px"></div>')
+
+# ---------------------------------------------------------------------------
+# Wallet forensics (Phase 5): under the result, per analysed holder — entry, time held, cost, sold for, holding now,
+# P&L and multiple at candle prices (estimates), and the funding source; shared funders summarised on top.
+# Painted from the result (holders[].forensics, forensics) into its own element, like «all holders».
+# ---------------------------------------------------------------------------
+rep('allRef=React.createRef();', 'allRef=React.createRef(); fzRef=React.createRef();')
+rep('allRef:this.allRef', 'allRef:this.allRef, fzRef:this.fzRef')
+rep('this.bump(); this.loadAll();}', 'this.bump(); this.loadAll(); this.paintForensics();}')
+rep('        <div ref="{{allRef}}" data-all-holders="1" style="margin-top:56px"></div>',
+    '        <div ref="{{fzRef}}" data-forensics="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{allRef}}" data-all-holders="1" style="margin-top:56px"></div>')
+rep("  loadAll(tries=0){", r"""  paintForensics(tries=0){   // wallet forensics of the analysed holders (Phase 5)
+    const m=this.m, el=this.fzRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintForensics(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, fz=raw.forensics, hs=(raw.holders||[]).filter(h=>h.forensics);
+    if(!fz||!hs.length) return;
+    const MONO="font-family:'JetBrains Mono',monospace", ex=EXPLORER[chainOf(m.ca)];
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const short=a=>a?a.slice(0,6)+'…'+a.slice(-4):'—';
+    const usd=v=>{if(v==null) return '—'; const a=Math.abs(v), sg=v<0?'-':'';
+      return sg+'$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=1e3?(a/1e3).toFixed(1)+'k':a.toFixed(a<10?2:0));};
+    const held=h=>h==null?'—':h<1?Math.round(h*60)+'m':h<48?h.toFixed(1)+'h':Math.floor(h/24)+'d '+Math.round(h%24)+'h';
+    const addr=(a,color)=>{const t=ex?mk('a','color:'+color,short(a)):mk('span','color:'+color,short(a)); t.title=a; if(ex){t.href=ex.account(a); t.target='_blank'; t.rel='noopener';} return t;};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','wallet forensics'),
+                mk('span',MONO+';font-size:12px;color:#8a959c',fz.priced?'USD at candle prices · estimates':'no price history: amounts only'));
+    el.append(head);
+    const pct=v=>(v*100).toFixed(1)+'%';
+    (fz.common_funders||[]).forEach(g=>{   // hub (exchange-like, 100+ outgoing): shown, never a link
+      const hub=g.hub===true, c=hub?'138,149,156':'255,77,77';
+      const n=mk('div',MONO+`;margin-top:12px;padding:12px 14px;border:1px solid rgba(${c},0.35);border-radius:10px;background:rgba(${c},0.06);font-size:12.5px;color:#eef1f3;display:flex;flex-wrap:wrap;gap:6px;align-items:center`);
+      n.append(mk('span','color:'+(hub?'#8a959c':'#ff4d4d'),hub?'hub funder':'common funder'),addr(g.funder,hub?'#c9d1d6':'#ffd0d0'),
+               mk('span','',`funded ${g.wallets.length} of the top ${hs.length} · ${pct(g.share)} of float`+(g.is_holder?' · itself a holder':'')
+                 +(hub?` · ${g.outgoing}+ outgoing transfers: exchange-like, not a link`:g.hub===false?' · linked as one operator':'')));
+      el.append(n);});
+    const grid='display:grid;grid-template-columns:40px minmax(90px,1fr) 70px 64px 80px 80px 80px 90px 60px minmax(120px,1.2fr);align-items:center;gap:8px;padding:9px 14px;';
+    const box=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f;overflow-x:auto');
+    const tbl=mk('div','min-width:900px');
+    const hdr=mk('div',grid+MONO+';font-size:11px;color:#5f6b72;text-transform:lowercase');
+    ['#','wallet','entry','held','cost','sold for','holding','p&l','x','funded by'].forEach(x=>hdr.append(mk('span','',x)));
+    tbl.append(hdr);
+    const hset=new Set((raw.holders||[]).map(h=>h.wallet));
+    hs.forEach((h,i)=>{const f=h.forensics, r=mk('div',grid+'border-top:1px solid #10161a;'+MONO+';font-size:12.5px;color:#dfe5e8');
+      const pnl=mk('span','color:'+(f.pnl_usd==null?'#8a959c':f.pnl_usd>=0?'#00c805':'#ff4d4d'),f.pnl_usd==null?'—':(f.pnl_usd>=0?'+':'')+usd(f.pnl_usd));
+      const fu=f.funding, fcell=mk('span','display:flex;gap:6px;align-items:center;overflow:hidden');
+      if(!fu) fcell.append(mk('span','color:#5f6b72','unread'));
+      else if(!fu.found) fcell.append(mk('span','color:#8a959c','no direct deposit'));
+      else{fcell.append(addr(fu.funder,'#9fd9ff'));
+        if(hset.has(fu.funder)) fcell.append(mk('span','color:#ffb020;font-size:11px','a holder'));
+        if(fu.shared_with) fcell.append(mk('span','color:'+(fu.hub?'#8a959c':'#ff4d4d')+';font-size:11px',fu.hub?'hub':'+'+fu.shared_with+' same'));}
+      r.append(mk('span','color:#5f6b72','#'+(i+1)),addr(h.wallet,'#dfe5e8'),mk('span','color:#8a959c',f.entry||'—'),
+               mk('span','',held(f.hold_h)),mk('span','',usd(f.cost_usd)),mk('span','',usd(f.proceeds_usd)),
+               mk('span','',f.exited?'exited':usd(f.holding_usd)),pnl,
+               mk('span','color:'+(f.multiple==null?'#8a959c':f.multiple>=1?'#00c805':'#ff4d4d'),f.multiple==null?'—':f.multiple.toFixed(2)+'x'),fcell);
+      tbl.append(r);});
+    box.append(tbl); el.append(box);
+    el.append(mk('p',MONO+';margin:10px 0 0;font-size:11.5px;line-height:1.6;color:#5f6b72',
+      'Trades come from the token\'s transfer history and are priced at the candle of their time; P&L shows only when every buy and sell could be priced. '
+      +'Funded by: the wallet\'s first native-coin deposit before it bought. Evidence only — not part of the score yet.'));
+  }
+  loadAll(tries=0){""")
+
+# ---------------------------------------------------------------------------
+# Relationship graph (Phase 6): holders, funders and distributors with the evidence edges between them
+# (result.graph), laid out by a small force simulation in an SVG — no library. Hub funders are drawn grey with
+# dashed edges: shown, never linking. Click a node: explorer (or copy the address where the chain has none).
+# ---------------------------------------------------------------------------
+rep('fzRef=React.createRef();', 'fzRef=React.createRef(); grRef=React.createRef();')
+rep('fzRef:this.fzRef', 'fzRef:this.fzRef, grRef:this.grRef')
+rep('this.loadAll(); this.paintForensics();}', 'this.loadAll(); this.paintForensics(); this.paintGraph();}')
+rep('        <div ref="{{fzRef}}" data-forensics="1" style="margin-top:56px"></div>',
+    '        <div ref="{{grRef}}" data-graph="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{fzRef}}" data-forensics="1" style="margin-top:56px"></div>')
+rep("  paintForensics(tries=0){", r"""  paintGraph(tries=0){   // relationship graph (Phase 6)
+    const m=this.m, el=this.grRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintGraph(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, g=raw.graph;
+    if(!g||!g.nodes||!g.nodes.length) return;
+    const NS='http://www.w3.org/2000/svg', MONO="font-family:'JetBrains Mono',monospace", ex=EXPLORER[chainOf(m.ca)];
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const sv=(tag,at)=>{const e=document.createElementNS(NS,tag); for(const k in at) e.setAttribute(k,at[k]); return e;};
+    const st=g.stats||{}, pct=v=>(v*100).toFixed(1)+'%';
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','relationship graph'),
+      mk('span',MONO+';font-size:12px;color:#8a959c',`${st.links||0} links · ${st.operators_merged||0} operators merged`
+        +(st.operators_merged?` (largest ${pct(st.largest_operator_share||0)} of float)`:'')+(st.hubs?` · ${st.hubs} hub funder${st.hubs>1?'s':''} (not linking)`:'')));
+    el.append(head);
+    const W=900, H=Math.max(360,Math.min(620,180+g.nodes.length*9)), cx=W/2, cy=H/2;
+    const OPC=['#ff4d4d','#ffb020','#b07bff','#19d3ff','#21e6a0','#ff5ad1','#ff7a1a','#9fd9ff'];
+    const N=g.nodes.map((n,i)=>{const a=i/g.nodes.length*Math.PI*2, r=n.type==='holder'?Math.min(W,H)*0.28:Math.min(W,H)*0.42;
+      return Object.assign({x:cx+Math.cos(a)*r,y:cy+Math.sin(a)*r,vx:0,vy:0,
+        R:n.type==='holder'?6+Math.sqrt(n.share||0)*46:n.type==='funder'?7:6},n);});
+    const idx={}; N.forEach((n,i)=>idx[n.id]=i);
+    const E=(g.edges||[]).filter(e=>idx[e.a]!=null&&idx[e.b]!=null);
+    for(let it=0;it<320;it++){   // force layout: repulsion, springs along edges, gravity; cooled over the iterations
+      const k=1-it/320;
+      for(let i=0;i<N.length;i++) for(let j=i+1;j<N.length;j++){const a=N[i],b=N[j]; let dx=a.x-b.x, dy=a.y-b.y, d2=dx*dx+dy*dy+0.01;
+        const f=Math.min(8,1800/d2), d=Math.sqrt(d2); dx/=d; dy/=d; a.vx+=dx*f; a.vy+=dy*f; b.vx-=dx*f; b.vy-=dy*f;}
+      E.forEach(e=>{const a=N[idx[e.a]], b=N[idx[e.b]], dx=b.x-a.x, dy=b.y-a.y, d=Math.sqrt(dx*dx+dy*dy)||1,
+        L=e.kind==='funding'||e.kind==='sent_token'?70:55, f=(d-L)*0.02*(e.confidence||0.5); a.vx+=dx/d*f; a.vy+=dy/d*f; b.vx-=dx/d*f; b.vy-=dy/d*f;});
+      N.forEach(n=>{n.vx+=(cx-n.x)*0.004; n.vy+=(cy-n.y)*0.004; n.x+=n.vx*k; n.y+=n.vy*k; n.vx*=0.6; n.vy*=0.6;
+        n.x=Math.max(n.R+4,Math.min(W-n.R-4,n.x)); n.y=Math.max(n.R+4,Math.min(H-n.R-4,n.y));});
+    }
+    const svg=sv('svg',{viewBox:`0 0 ${W} ${H}`,width:'100%',role:'img','aria-label':'relationship graph of the top holders'});
+    svg.style.cssText='display:block;margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f';
+    const hubOf=id=>{const n=N[idx[id]]; return n&&n.hub;};
+    const EC={same_tx:'#ff4d4d',direct:'#ff4d4d',funded:'#ff4d4d',funder:'#ff4d4d',distributor:'#ffb020',sent_token:'#ffb020',pack:'#ffd23f'};
+    E.forEach(e=>{const a=N[idx[e.a]], b=N[idx[e.b]], hub=e.kind==='funding'&&hubOf(e.a);
+      const col=e.kind==='funding'?(hub?'#3a454c':'#ff4d4d'):(EC[e.kind]||'#8a959c');
+      const ln=sv('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:col,'stroke-width':e.level==='proven'?2:1.2,'stroke-opacity':hub?0.6:0.85});
+      if(hub||e.kind==='pack'||e.kind==='funding') ln.setAttribute('stroke-dasharray',hub?'3 4':'6 4');
+      const t=sv('title',{}); t.textContent=`${e.kind}${e.tx?' · tx '+e.tx:''}${e.block!=null?' · block '+e.block:''} · confidence ${e.confidence}`; ln.append(t);
+      svg.append(ln);});
+    N.forEach(n=>{let sh;
+      if(n.type==='holder'){const col=n.operator!=null?OPC[n.operator%OPC.length]:'#5f6b72';
+        sh=sv('circle',{cx:n.x,cy:n.y,r:n.R,fill:n.operator!=null?col:'#141b20',stroke:col,'stroke-width':1.5,'fill-opacity':n.operator!=null?0.35:1});}
+      else if(n.type==='funder'){const s=n.R; sh=sv('rect',{x:n.x-s,y:n.y-s,width:2*s,height:2*s,transform:`rotate(45 ${n.x} ${n.y})`,
+        fill:n.hub?'#1c252b':'#3a0d0d',stroke:n.hub?'#5f6b72':'#ff4d4d','stroke-width':1.5});}
+      else sh=sv('polygon',{points:`${n.x},${n.y-7} ${n.x+7},${n.y+6} ${n.x-7},${n.y+6}`,fill:'#3a2a05',stroke:'#ffb020','stroke-width':1.5});
+      sh.style.cursor='pointer';
+      const t=sv('title',{}); t.textContent=n.type==='holder'?`#${n.rank} ${n.id} · ${pct(n.share)} of float`+(n.operator!=null?` · operator ${n.operator+1}`:'')
+        :n.type==='funder'?`funder ${n.id} · funded ${n.funds} holder${n.funds>1?'s':''}`+(n.outgoing!=null?` · ${n.outgoing}${n.hub?'+':''} outgoing`:'')+(n.hub?' · hub: never links':' · links its holders')
+        :`distributor ${n.id} · sent the token to ${n.holders} holders`;
+      sh.append(t);
+      sh.addEventListener('click',()=>{if(ex) window.open(ex.account(n.id),'_blank','noopener'); else try{navigator.clipboard.writeText(n.id);}catch(e){}});
+      svg.append(sh);
+      if(n.type==='holder'&&n.rank<=20){const tx=sv('text',{x:n.x,y:n.y+3.5,'text-anchor':'middle','font-size':n.R>12?10:8,fill:'#eef1f3','pointer-events':'none'});
+        tx.style.fontFamily="'JetBrains Mono',monospace"; tx.textContent=n.rank; svg.append(tx);}
+    });
+    el.append(svg);
+    const leg=mk('div',MONO+';display:flex;flex-wrap:wrap;gap:16px;margin-top:10px;font-size:11.5px;color:#8a959c');
+    [['●','#9fd9ff','holder (size = share; colour = merged operator)'],['◆','#ff4d4d','funder linking its holders'],['◆','#5f6b72','hub funder (exchange-like): shown, never links'],
+     ['▲','#ffb020','token distributor'],['━','#ff4d4d','proven link'],['┅','#ffd23f','same-block pack']].forEach(([s,c,t])=>{const i=mk('span','');
+      i.append(mk('span','color:'+c,s+' '),document.createTextNode(t)); leg.append(i);});
+    el.append(leg);
+    if(!st.links) el.append(mk('p',MONO+';margin:8px 0 0;font-size:11.5px;color:#5f6b72','No links between the top holders: every holder counts as its own operator.'));
+  }
+  paintForensics(tries=0){""")
+
+# ---------------------------------------------------------------------------
+# Seen before (Phase 7, memory brain): crews (holders that top-held other tokens together), the deployer's other
+# launches, funders seen in other tokens, and each top holder's appearances elsewhere with those tokens' verdicts.
+# Painted from result.memory; nothing when memory is not configured.
+# ---------------------------------------------------------------------------
+rep('grRef=React.createRef();', 'grRef=React.createRef(); memRef=React.createRef();')
+rep('grRef:this.grRef', 'grRef:this.grRef, memRef:this.memRef')
+rep('this.paintForensics(); this.paintGraph();}', 'this.paintForensics(); this.paintGraph(); this.paintMemory();}')
+rep('        <div ref="{{grRef}}" data-graph="1" style="margin-top:56px"></div>',
+    '        <div ref="{{memRef}}" data-memory="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{grRef}}" data-graph="1" style="margin-top:56px"></div>')
+rep("  paintGraph(tries=0){", r"""  paintMemory(tries=0){   // seen before (Phase 7)
+    const m=this.m, el=this.memRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintMemory(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, mem=raw.memory;
+    if(!mem) return;
+    const MONO="font-family:'JetBrains Mono',monospace", ex=EXPLORER[chainOf(m.ca)];
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const short=a=>a?a.slice(0,6)+'…'+a.slice(-4):'—', pct=v=>(v*100).toFixed(1)+'%';
+    const addr=(a,color)=>{const t=ex?mk('a','color:'+color,short(a)):mk('span','color:'+color,short(a)); t.title=a; if(ex){t.href=ex.account(a); t.target='_blank'; t.rel='noopener';} return t;};
+    const BC={DANGER:'#ff4d4d',RISKY:'#ffb020',OK:'#9fd9ff',CLEAN:'#00c805'};
+    const chip=t=>{const c=BC[t.band]||'#8a959c', s=mk('span',MONO+`;display:inline-flex;gap:4px;padding:2px 7px;border:1px solid ${c}55;border-radius:999px;font-size:11px;color:#dfe5e8`);
+      s.append(mk('span','',t.ticker?'$'+t.ticker:short(t.token)),mk('span','color:'+c,(t.band||'?').toLowerCase())); s.title=t.token; return s;};
+    const mm=mem.memory||{};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','seen before'),
+      mk('span',MONO+';font-size:12px;color:#8a959c',`memory: ${(mm.tokens||0).toLocaleString('en-US')} tokens · ${(mm.scans||0).toLocaleString('en-US')} scans on this chain`));
+    el.append(head);
+    const rank=w=>{const i=(raw.holders||[]).findIndex(h=>h.wallet===w); return i<0?'?':'#'+(i+1);};
+    const box=(c,label,...kids)=>{const n=mk('div',MONO+`;margin-top:12px;padding:12px 14px;border:1px solid rgba(${c},0.35);border-radius:10px;background:rgba(${c},0.06);font-size:12.5px;color:#eef1f3;display:flex;flex-wrap:wrap;gap:6px;align-items:center`);
+      n.append(mk('span',`color:rgb(${c})`,label),...kids); el.append(n);};
+    (mem.crews||[]).forEach(c=>{const ws=mk('span',''); c.wallets.forEach((w,i)=>{if(i) ws.append(document.createTextNode(', ')); ws.append(mk('span','',rank(w)+' '),addr(w,'#ffd0d0'));});
+      box('255,77,77','crew',ws,mk('span','',`top-held ${c.tokens.length} other tokens together (up to ${c.together} at once) · ${pct(c.share)} of float now`));});
+    const dep=mem.deployer||{};
+    if(dep.tokens){const chips=mk('span','display:inline-flex;flex-wrap:wrap;gap:4px'); (dep.list||[]).forEach(t=>chips.append(chip(t)));
+      box(dep.danger?'255,77,77':'255,176,32','serial deployer',mk('span','',`launched ${dep.tokens} other token${dep.tokens>1?'s':''} we scanned`+(dep.danger?` · ${dep.danger} rated danger`:'')),chips);}
+    (mem.repeat_funders||[]).filter(r=>r.other_tokens>0).forEach(r=>{const hub=r.hub===true;
+      box(hub?'138,149,156':'255,176,32',hub?'hub funder':'repeat funder',addr(r.funder,hub?'#c9d1d6':'#ffe0b0'),
+        mk('span','',`funded top holders of ${r.other_tokens} other token${r.other_tokens>1?'s':''} (${r.other_wallets} wallets)`+(hub?' · exchange-like, not evidence':'')));});
+    const sw=mem.seen_wallets||[];
+    if(sw.length){const tbl=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f;overflow-x:auto');
+      const grid='display:grid;grid-template-columns:44px minmax(110px,160px) 90px 80px minmax(260px,1fr);align-items:center;gap:8px;padding:9px 14px;min-width:640px;';
+      const hdr=mk('div',grid+MONO+';font-size:11px;color:#5f6b72'); ['#','wallet','other tokens','danger','recent'].forEach(x=>hdr.append(mk('span','',x))); tbl.append(hdr);
+      sw.forEach(s=>{const r=mk('div',grid+'border-top:1px solid #10161a;'+MONO+';font-size:12.5px;color:#dfe5e8'), chips=mk('span','display:flex;flex-wrap:wrap;gap:4px');
+        (s.list||[]).slice(0,6).forEach(t=>chips.append(chip(t)));
+        r.append(mk('span','color:#5f6b72','#'+s.rank),addr(s.wallet,'#dfe5e8'),mk('span','',String(s.tokens)),
+                 mk('span','color:'+(s.danger?'#ff4d4d':'#8a959c'),String(s.danger)),chips); tbl.append(r);});
+      el.append(tbl);}
+    if(!(mem.crews||[]).length&&!dep.tokens&&!sw.length&&!(mem.repeat_funders||[]).some(r=>r.other_tokens>0))
+      el.append(mk('p',MONO+';margin:12px 0 0;font-size:12px;color:#8a959c','None of these holders, their funders or the deployer appear in other tokens CrawlMeme has scanned yet.'));
+    el.append(mk('p',MONO+';margin:10px 0 0;font-size:11.5px;line-height:1.6;color:#5f6b72',
+      'From CrawlMeme\'s own memory of earlier scans (other tokens only). A crew is holders that were top holders of 2+ other tokens together. Evidence only, not part of the score yet.'));
+  }
+  paintGraph(tries=0){""")
+
+# ---------------------------------------------------------------------------
+# Verdict model and data health (Phase 8): confidence, the live scoring model, what the shadow model would say and
+# why, and what the verdict stands on (coverage, wallets read, verification, prices, funding, memory, cost).
+# ---------------------------------------------------------------------------
+rep('memRef=React.createRef();', 'memRef=React.createRef(); dhRef=React.createRef();')
+rep('memRef:this.memRef', 'memRef:this.memRef, dhRef:this.dhRef')
+rep('this.paintGraph(); this.paintMemory();}', 'this.paintGraph(); this.paintMemory(); this.paintHealth();}')
+rep('        <div ref="{{memRef}}" data-memory="1" style="margin-top:56px"></div>',
+    '        <div ref="{{dhRef}}" data-health="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{memRef}}" data-memory="1" style="margin-top:56px"></div>')
+rep("  paintMemory(tries=0){", r"""  paintHealth(tries=0){   // verdict model and data health (Phase 8)
+    const m=this.m, el=this.dhRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintHealth(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, dh=raw.data_health, md=raw.model;
+    if(!dh||!md) return;
+    const MONO="font-family:'JetBrains Mono',monospace";
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const CC={high:'#00c805',medium:'#ffb020',low:'#ff4d4d'}, BC={DANGER:'#ff4d4d',RISKY:'#ffb020',OK:'#9fd9ff',CLEAN:'#00c805'};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    const left=mk('div','display:flex;align-items:baseline;gap:12px');
+    left.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','how sure is this'),
+      mk('span',MONO+`;font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid ${CC[dh.confidence]}66;color:${CC[dh.confidence]}`,dh.confidence+' confidence'));
+    head.append(left, mk('span',MONO+';font-size:12px;color:#8a959c','model '+md.id));
+    el.append(head);
+    const live=(md.scores||{})[md.id]||{};
+    Object.entries(md.scores||{}).filter(([k])=>k!==md.id).forEach(([k,v])=>{
+      const same=v.band===live.band&&v.score===live.score;
+      const n=mk('div',MONO+';margin-top:12px;padding:12px 14px;border:1px solid #1c252b;border-radius:10px;background:#0b1013;font-size:12.5px;color:#dfe5e8;display:flex;flex-wrap:wrap;gap:6px;align-items:center');
+      n.append(mk('span','color:#9fd9ff',k+' (shadow)'));
+      if(v.score==null){n.append(mk('span','color:#8a959c','no verdict'));}
+      else if(same){n.append(mk('span','color:#8a959c','agrees: '+(v.band||'').toLowerCase()+' '+v.score));}
+      else{n.append(mk('span','color:'+(BC[v.band]||'#dfe5e8'),(v.band||'').toLowerCase()+' '+v.score),
+        mk('span','color:#8a959c','— '+(v.adjustments||[]).map(a=>a.why+' ('+a.points+')').join(' · ')));}
+      el.append(n);});
+    const rows=[
+      ['coverage',(dh.coverage||'—')+(dh.reasons&&dh.reasons.length?' · '+dh.reasons.join('; '):'')],
+      ['wallets read',dh.wallets_examined?`${dh.wallets_read} of ${dh.wallets_examined}`:'—'],
+      ['holder balances',(dh.holders_method||'—').replace(/_/g,' ')+(dh.history_verified===true?' · verified against the chain':dh.history_verified===false?' · verification failed':'')],
+      ['market data',({gt:'GeckoTerminal',dexscreener:'DexScreener',dexpaprika:'DexPaprika',ds:'DexScreener',dp:'DexPaprika'})[dh.market_source]||dh.market_source||'—'],
+      ['prices for P&L',dh.priced?`${dh.price_points} candles`:'none'],
+      ['funding read',dh.funding_read!=null?`${dh.funding_read} wallets`:'—'],
+      ['memory',dh.memory==null?'off':dh.memory.available?`${(dh.memory.tokens||0).toLocaleString('en-US')} tokens · ${(dh.memory.scans||0).toLocaleString('en-US')} scans`:'unavailable this scan'],
+      ['cost',`${dh.elapsed_s}s · ${dh.rpc_requests} RPC requests`]];
+    const grid=mk('div','margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1px;border:1px solid #141b20;border-radius:12px;overflow:hidden;background:#141b20');
+    rows.forEach(([k,v])=>{const c=mk('div','background:#090c0f;padding:10px 14px;display:flex;flex-direction:column;gap:4px');
+      c.append(mk('span',MONO+';font-size:11px;color:#5f6b72',k),mk('span',MONO+';font-size:12.5px;color:#dfe5e8;overflow-wrap:anywhere',v)); grid.append(c);});
+    el.append(grid);
+    el.append(mk('p',MONO+';margin:10px 0 0;font-size:11.5px;line-height:1.6;color:#5f6b72',
+      'The live model gives the verdict. Shadow models are scored on the same evidence and kept in memory, so they can be checked against what tokens actually did before one replaces it.'));
+  }
+  paintMemory(tries=0){""")
+
+# ---------------------------------------------------------------------------
+# Sell impact (Phase 9): what the price does if given holders sell into today's liquidity — scenarios (largest wallet,
+# largest linked operator, launch bundle, combined suspicious supply), the venues and the model each is priced with,
+# sell tax, depth (tokens to move the price 2 / 10 / 25 / 50%) and slippage for standard sizes.
+# ---------------------------------------------------------------------------
+rep('dhRef=React.createRef();', 'dhRef=React.createRef(); siRef=React.createRef();')
+rep('dhRef:this.dhRef', 'dhRef:this.dhRef, siRef:this.siRef')
+rep('this.paintMemory(); this.paintHealth();}', 'this.paintMemory(); this.paintHealth(); this.paintImpact();}')
+rep('        <div ref="{{dhRef}}" data-health="1" style="margin-top:56px"></div>\n\n',
+    '        <div ref="{{siRef}}" data-sell-impact="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{dhRef}}" data-health="1" style="margin-top:56px"></div>\n\n')
+rep("  paintHealth(tries=0){", r"""  paintImpact(tries=0){   // sell impact (Phase 9)
+    const m=this.m, el=this.siRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintImpact(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, si=raw.sell_impact;
+    if(!si) return;
+    const MONO="font-family:'JetBrains Mono',monospace";
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const pct=v=>v==null?'—':(v*100<0.1&&v>0?'<0.1':(v*100).toFixed(v*100>=10?0:1))+'%';
+    const usd=v=>{if(v==null||!isFinite(v)) return '—'; const a=Math.abs(v);
+      return '$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=1e3?(a/1e3).toFixed(1)+'k':a.toFixed(a>=10?0:2));};
+    const dc=v=>v==null?'#8a959c':v>=0.5?'#ff4d4d':v>=0.2?'#ffb020':'#00c805';
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','sell impact'),
+      mk('span',MONO+';font-size:12px;color:#8a959c',si.liquidity.measured?(si.liquidity.aggregated?si.liquidity.venues.length+' pools together':'1 pool')+(si.liquidity.exact?'':' · approximate'):'liquidity not measured'));
+    el.append(head);
+    const NAMES={largest_wallet:'largest wallet',largest_operator:'largest linked operator',launch_bundle:'launch bundle',bundle_traced:'launch supply, traced',suspicious_combined:'all suspicious supply'};
+    const tbl=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;overflow:hidden');
+    const row=(cells,hdr)=>{const r=mk('div','display:grid;grid-template-columns:minmax(0,1.6fr) repeat(4,minmax(0,1fr));gap:8px;padding:10px 14px;'+MONO+';font-size:'+(hdr?'11px;color:#5f6b72':'12.5px;color:#dfe5e8')+(hdr?'':';border-top:1px solid #141b20'));
+      cells.forEach(c=>r.append(typeof c==='string'?mk('span','overflow-wrap:anywhere',c):c)); return r;};
+    tbl.append(row(['if they sell','holds','price impact','avg slippage','proceeds'],true));
+    Object.keys(NAMES).forEach(k=>{const x=si.scenarios[k]; if(!x) return; const n=x.wallets.length;
+      const lab=mk('span','display:flex;flex-direction:column;gap:2px'); lab.append(mk('span','',NAMES[k]),mk('span','font-size:11px;color:#5f6b72',n+' wallet'+(n===1?'':'s')+(x.sellable_share<x.share-1e-9?' · '+pct(x.share-x.sellable_share)+' locked':'')));
+      tbl.append(row([lab, pct(x.share)+' of float', mk('span','color:'+dc(x.drop),x.drop==null?'—':(x.lower_bound?'≥ ':'')+'−'+pct(x.drop)), x.slippage==null?'—':pct(x.slippage), usd(x.proceeds_usd)]));});
+    el.append(tbl);
+    const facts=[];
+    facts.push(['priced with',si.liquidity.venues.length?si.liquidity.venues.map(v=>(v.label||v.model)+' · '+({constant_product:'x·y=k',bonding_curve:'curve x·y=k (virtual)',quote_curve:'on-chain quotes',approximate:'balance, approximate'}[v.model]||v.model)).join(' + '):'—']);
+    const t=si.tax;
+    facts.push(['sell tax',t?pct(t.sell)+(t.side==='quote'?' of proceeds':' of tokens sold')+' · '+({launchpad:'launchpad',token_2022:'Token-2022 transfer fee',observed:`seen in ${t.samples} sells (estimate)`}[t.source]||t.source||''):'none found']);
+    if(si.depth.length) facts.push(['depth',si.depth.map(x=>`−${Math.round(x.drop*100)}%: ${x.more_than?'> ':''}${pct(x.share)}${x.value_usd!=null?' ('+(x.more_than?'> ':'')+usd(x.value_usd)+')':''}`).join(' · ')]);
+    if(si.slippage.length) facts.push(['sell of float',si.slippage.map(x=>`${pct(x.share)} → −${pct(x.drop)}`).join(' · ')]);
+    const grid=mk('div','margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1px;border:1px solid #141b20;border-radius:12px;overflow:hidden;background:#141b20');
+    facts.forEach(([k,v])=>{const c=mk('div','background:#090c0f;padding:10px 14px;display:flex;flex-direction:column;gap:4px');
+      c.append(mk('span',MONO+';font-size:11px;color:#5f6b72',k),mk('span',MONO+';font-size:12.5px;color:#dfe5e8;overflow-wrap:anywhere',v)); grid.append(c);});
+    el.append(grid);
+    el.append(mk('p',MONO+';margin:10px 0 0;font-size:11.5px;line-height:1.6;color:#5f6b72',
+      'Conditional scenarios, not predictions: what the price would do if these wallets sold everything they can sell now into today\'s liquidity, split across the priced pools. Each wallet counts once per row; rows overlap. Depth is the share of float it takes to move the price that much.'));
+  }
+  paintHealth(tries=0){""")
+
+# ---------------------------------------------------------------------------
+# Launch bundle (Phase 10): participants from the launch transactions, the supply they took traced through every later
+# transfer — initial allocation, still traceable (concentrated / diluted), sold, burned or locked, where it sits now
+# (including outside the top holders), coordination signals and a confidence label with its limits.
+# ---------------------------------------------------------------------------
+rep('siRef=React.createRef();', 'siRef=React.createRef(); bdRef=React.createRef();')
+rep('siRef:this.siRef', 'siRef:this.siRef, bdRef:this.bdRef')
+rep('this.paintHealth(); this.paintImpact();}', 'this.paintHealth(); this.paintImpact(); this.paintBundle();}')
+rep('        <div ref="{{siRef}}" data-sell-impact="1" style="margin-top:56px"></div>\n\n',
+    '        <div ref="{{bdRef}}" data-bundle="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{siRef}}" data-sell-impact="1" style="margin-top:56px"></div>\n\n')
+rep("  paintImpact(tries=0){", r"""  paintBundle(tries=0){   // launch bundle (Phase 10)
+    const m=this.m, el=this.bdRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintBundle(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{}, b=raw.bundle;
+    if(!b) return;
+    if(b.mode==='none'){   // nobody took supply in the launch window
+      el.append(Object.assign(document.createElement('p'),{textContent:`launch bundle: no wallet took supply in the launch window (blocks ${b.window.from_block}–${b.window.to_block}, first ${b.window.seconds}s) or as a sniper.`}));
+      el.lastChild.style.cssText="font-family:'JetBrains Mono',monospace;margin:0;font-size:12.5px;color:#8a959c;border-top:1px solid #12181c;padding-top:22px";
+      return;}
+    const MONO="font-family:'JetBrains Mono',monospace";
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const pct=v=>v==null?'—':(v>0&&v*100<0.1?'<0.1':(v*100).toFixed(v*100>=10?0:1))+'%';
+    const sh=a=>a&&a.length>12?a.slice(0,6)+'…'+a.slice(-4):(a||'');
+    const CC={high:'#00c805',medium:'#ffb020',low:'#ff4d4d'};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    const left=mk('div','display:flex;align-items:baseline;gap:12px');
+    left.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','launch bundle'),
+      mk('span',MONO+`;font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid ${CC[b.confidence]}66;color:${CC[b.confidence]}`,b.confidence+' confidence'));
+    const n=b.participants.length;
+    head.append(left, mk('span',MONO+';font-size:12px;color:#8a959c',`${n} launch wallet${n===1?'':'s'}`+(b.window&&b.window.blocks!=null?` · block ${b.window.from_block}${b.window.blocks?'–'+b.window.to_block:''}`:'')));
+    el.append(head);
+    const s=b.supply, tiles=[
+      ['initial allocation',pct(s.initial_share)+' of supply'],
+      ['still traceable',pct(s.traceable_share)+(s.concentrated_share!=null&&s.traceable_share>s.concentrated_share+1e-9?` (${pct(s.concentrated_share)} concentrated)`:'')],
+      ['outside the top holders',pct(s.outside_top_share)],
+      ['sold',s.sold_share==null?'not traced':pct(s.sold_share)],
+      ['burned / locked',s.burned_share==null?'not traced':pct((s.burned_share||0)+(s.infra_share||0))],
+      ['current holders',String(b.dispersal.holders_now)+(b.dispersal.fresh_recipients?` · ${b.dispersal.fresh_recipients} new wallets`:'')]];
+    if(s.left_share!=null) tiles.splice(3,2,['left the launch wallets',pct(s.left_share)]);
+    const grid=mk('div','margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1px;border:1px solid #141b20;border-radius:12px;overflow:hidden;background:#141b20');
+    tiles.forEach(([k,v])=>{const c=mk('div','background:#090c0f;padding:10px 14px;display:flex;flex-direction:column;gap:4px');
+      c.append(mk('span',MONO+';font-size:11px;color:#5f6b72',k),mk('span',MONO+';font-size:13px;color:#dfe5e8',v)); grid.append(c);});
+    el.append(grid);
+    const co=b.coordination||{}, sig=[];
+    if(co.same_tx_wallets) sig.push(`${co.same_tx_wallets} wallets bought in shared transactions`);
+    if(co.uniform_buys) sig.push(`${co.uniform_buys} launch-block buys of near-equal size`);
+    if((co.shared_funders||[]).length) sig.push(`${co.shared_funders.length} shared funder${co.shared_funders.length>1?'s':''}`);
+    if(co.internal_transfers) sig.push(`${co.internal_transfers} transfers between launch wallets`);
+    if(sig.length) el.append(mk('p',MONO+';margin:12px 0 0;font-size:12.5px;color:#ffb020','coordination: '+sig.join(' · ')));
+    const KIND={buy:'buy',dev_transfer:'from deployer',transfer:'transfer',deployer:'deployer',sniper:'sniper'};
+    const ST={holding:'holding',sold_all:'sold all',sold_part:'sold part',moved:'moved on',moved_part:'moved part',burned:'burned',gone:'gone',partly_out:'partly out'};
+    const tbl=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;overflow:hidden');
+    const row=(cells,hdr)=>{const r=mk('div','display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) repeat(3,minmax(0,0.8fr)) minmax(0,1fr);gap:8px;padding:9px 14px;'+MONO+';font-size:'+(hdr?'11px;color:#5f6b72':'12.5px;color:#dfe5e8')+(hdr?'':';border-top:1px solid #141b20'));
+      cells.forEach(c=>r.append(mk('span','overflow-wrap:anywhere',c))); return r;};
+    tbl.append(row(['launch wallet','how','took','holds','sold','now'],true));
+    b.participants.slice(0,15).forEach(p=>tbl.append(row([sh(p.wallet)+(p.in_top?' ·top':''),KIND[p.kind]||p.kind,pct(p.acquired_share),pct(p.held_share),p.sold_share==null?'—':pct(p.sold_share),ST[p.status]||p.status])));
+    el.append(tbl);
+    const out=(b.holders_now||[]).filter(h=>!h.original);
+    if(out.length){
+      el.append(mk('p',MONO+';margin:16px 0 6px;font-size:11px;color:#5f6b72','where launch supply sits now (not a launch wallet)'));
+      const t2=mk('div','border:1px solid #141b20;border-radius:12px;overflow:hidden');
+      out.slice(0,10).forEach((h,i)=>{const r=mk('div','display:grid;grid-template-columns:minmax(0,1.3fr) repeat(3,minmax(0,1fr));gap:8px;padding:9px 14px;'+MONO+';font-size:12.5px;color:#dfe5e8'+(i?';border-top:1px solid #141b20':''));
+        r.append(mk('span','',sh(h.wallet)),mk('span','',pct(h.share)),mk('span','color:#8a959c',h.purity==null?'—':Math.round(h.purity*100)+'% bundle'),mk('span','color:'+(h.in_top?'#8a959c':'#ffb020'),h.in_top?'in top':'outside top'+(h.hop?` · ${h.hop} hop${h.hop>1?'s':''}`:''))); t2.append(r);});
+      el.append(t2);}
+    (b.limits||[]).forEach(l=>el.append(mk('p',MONO+';margin:8px 0 0;font-size:11.5px;color:#8a959c','limit: '+l)));
+    el.append(mk('p',MONO+';margin:10px 0 0;font-size:11.5px;line-height:1.6;color:#5f6b72',
+      'Launch wallets are read from the launch transactions, not the current top list. Their supply is followed through every later transfer in proportion (pro-rata) until it reaches a pool (sold), a burn address or a locker. Concentrated: wallets where at least half the balance is launch supply.'));
+  }
+  paintImpact(tries=0){""")
+
+# ---------------------------------------------------------------------------
+# Memory brain (Phase 11) in «seen before»: outcome history (market labels measured before the scan), the deployer's
+# dev group, recurring operator clusters, and an outcome chip on earlier tokens.
+# ---------------------------------------------------------------------------
+rep("""    (mem.repeat_funders||[]).filter(r=>r.other_tokens>0).forEach(r=>{const hub=r.hub===true;""",
+    """    if(dep.rugged>=1) box('255,77,77','rug history',mk('span','',`${dep.rugged} of ${dep.labelled} earlier tokens of this deployer${(dep.group||[]).length?' or its dev group':''} rugged (market outcome measured after their scans)`));
+    if((dep.group||[]).length){const g=mk('span',''); dep.group.slice(0,6).forEach((a,i)=>{if(i) g.append(document.createTextNode(', ')); g.append(addr(a,'#ffe0b0'));});
+      box('255,176,32','dev group',mk('span','','deployer linked to'),g,mk('span','',`· the same wallets took supply at their launches · ${dep.group_tokens} tokens in the group`));}
+    (mem.clusters||[]).slice(0,4).forEach(c=>{const ws=mk('span',''); c.wallets.forEach((w,i)=>{if(i) ws.append(document.createTextNode(', ')); ws.append(mk('span','',rank(w)+' '),addr(w,'#ffd0d0'));});
+      box(c.level==='proven'?'255,77,77':'255,176,32','recurring cluster',ws,mk('span','',`were one ${c.level==='proven'?'proven operator':'pack'} in another token`));});
+    (mem.repeat_funders||[]).filter(r=>r.other_tokens>0).forEach(r=>{const hub=r.hub===true;""")
+rep("""      s.append(mk('span','',t.ticker?'$'+t.ticker:short(t.token)),mk('span','color:'+c,(t.band||'?').toLowerCase())); s.title=t.token; return s;};""",
+    """      s.append(mk('span','',t.ticker?'$'+t.ticker:short(t.token)),mk('span','color:'+c,(t.band||'?').toLowerCase()));
+      if(t.outcome) s.append(mk('span','color:'+({rugged:'#ff4d4d',dead:'#ff8a8a',up:'#00c805'}[t.outcome]||'#8a959c'),'→ '+t.outcome)); s.title=t.token; return s;};""")
+rep("""    if(!(mem.crews||[]).length&&!dep.tokens&&!sw.length&&!(mem.repeat_funders||[]).some(r=>r.other_tokens>0))""",
+    """    if(!(mem.crews||[]).length&&!dep.tokens&&!sw.length&&!(mem.clusters||[]).length&&!(dep.group||[]).length&&!(mem.repeat_funders||[]).some(r=>r.other_tokens>0))""")
+rep("""      'From CrawlMeme\\'s own memory of earlier scans (other tokens only). A crew is holders that were top holders of 2+ other tokens together. Evidence only, not part of the score yet.'));""",
+    """      'From CrawlMeme\\'s own memory of earlier scans (other tokens only), as it stood when this scan started. A crew is holders that were top holders of 2+ other tokens together. Outcomes (→ rugged, dead, up) are market facts measured after those scans, never our own verdicts. The live verdict does not use memory yet; the shadow models in «how sure is this» do.'));""")
+
+# ---------------------------------------------------------------------------
+# Launch radar (Phase 12): «radar» link in the header (desktop), before «how it works»; the page is /radar (radar.html)
+# ---------------------------------------------------------------------------
+rep('        <a class="cs-wide" href="#how" sc-camel-on-click="{{navHow}}"',
+    '        <a class="cs-wide" href="/radar" data-radar="1" data-grip="1" style="color:#8a959c" style-hover="color:#ffffff">radar</a>\n'
+    '        <a class="cs-wide" href="/proof" data-proof="1" data-grip="1" style="color:#8a959c" style-hover="color:#ffffff">proof</a>\n'
+    '        <a class="cs-wide" href="#how" sc-camel-on-click="{{navHow}}"')
+
+# ---------------------------------------------------------------------------
+# Terminal UI (Phase 14):
+#   - localization: /i18n.js (static/i18n.js) on every page, language picker in the header (8 languages)
+#   - «share & export» under the verdict: copy report link (?ca=&chain=), report as JSON / text, share card PNG
+#     (drawn on a canvas, downloaded or copied as an image where the browser allows it)
+#   - «scan history»: every immutable scan record of this token (/api/history), then vs now
+#   - «your recent scans» on the landing: this browser only (localStorage), never sent anywhere
+#   - relationship graph: drag nodes, hover to highlight a node's links, toggles for hub funders and packs
+#   - ?chain= in the URL picks the EVM chain, so a copied report link reopens on the same chain
+# ---------------------------------------------------------------------------
+ICON_LINKS += '\n<script src="/i18n.js"></script>'
+rep('<h1 style="margin:26px 0 0;font-size:clamp(40px,6vw,92px)', '<h1 data-i18n-whole="1" style="margin:26px 0 0;font-size:clamp(40px,6vw,92px)')
+rep('        <a class="cs-wide" href="/proof" data-proof="1" data-grip="1" style="color:#8a959c" style-hover="color:#ffffff">proof</a>\n',
+    '        <a class="cs-wide" href="/proof" data-proof="1" data-grip="1" style="color:#8a959c" style-hover="color:#ffffff">proof</a>\n'
+    '        <span data-lang-slot="1" style="display:inline-flex;align-items:center"></span>\n')
+rep("    const ca=new URLSearchParams(location.search).get('ca');\n",
+    "    const qs=new URLSearchParams(location.search), ca=qs.get('ca'), qc=(qs.get('chain')||'').toLowerCase();\n"
+    "    if(ca&&RH_RE.test(ca.trim())&&CHAIN_NAME[qc]&&qc!=='solana'){EVM_NET=qc; this.picked=qc; this.setState({net:qc});}   // report links\n")
+rep("    if(!fromUrl) history.pushState(null,'','?ca='+ca);",
+    "    if(!fromUrl) history.pushState(null,'','?ca='+ca+(RH_RE.test(ca)&&this.picked&&this.picked!=='solana'?'&chain='+this.picked:''));")
+
+# refs and lifecycle
+rep('bdRef=React.createRef();', 'bdRef=React.createRef(); shRef=React.createRef(); myRef=React.createRef();')
+rep('bdRef:this.bdRef', 'bdRef:this.bdRef, shRef:this.shRef, myRef:this.myRef')
+rep('this.paintImpact(); this.paintBundle();}', 'this.paintImpact(); this.paintBundle(); this.paintShare();}')
+rep('        <div ref="{{bdRef}}" data-bundle="1" style="margin-top:56px"></div>\n\n',
+    '        <div ref="{{shRef}}" data-share="1" style="margin-top:56px"></div>\n\n'
+    '        <div ref="{{bdRef}}" data-bundle="1" style="margin-top:56px"></div>\n\n')
+rep("    this.setState({view:'landing'});\n    window.scrollTo(0,0);\n    this.startLanding();\n    this.loadRecent();",
+    "    this.setState({view:'landing'});\n    window.scrollTo(0,0);\n    this.startLanding();\n    this.loadRecent();\n    this.paintMine();")
+rep('{{r.ago}}</span>\n            </a></sc-for>\n          </div></sc-if>\n',
+    '{{r.ago}}</span>\n            </a></sc-for>\n          </div></sc-if>\n          <div ref="{{myRef}}" data-mine="1"></div>\n')
+
+SHARE_JS = r"""  paintMine(tries=0){   // «your recent scans»: this browser only (localStorage)
+    const el=this.myRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.state.view==='landing') this.paintMine(tries+1);},150); return;}
+    el.innerHTML='';
+    const list=myScans();
+    const since=t=>{const d=Math.max(0,Math.floor((Date.now()-t)/1000)); return d<60?'just now':d<3600?Math.floor(d/60)+'m ago':d<86400?Math.floor(d/3600)+'h ago':Math.floor(d/86400)+'d ago';};
+    if(!list.length) return;
+    const MONO="font-family:'JetBrains Mono',monospace";
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const box=mk('div','margin-top:14px;border:1px solid #141b20;border-radius:12px;background:#090c0f;padding:6px 12px;box-sizing:border-box;min-width:0');
+    const head=mk('div','display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 4px 8px;'+MONO+';font-size:12px');
+    const clear=mk('button',MONO+';font-size:12px;color:#5f6b72;background:none;border:0;cursor:pointer;padding:0','clear');
+    clear.addEventListener('click',()=>{saveMyScans([]); this.paintMine();});
+    head.append(mk('span','color:#9fd9ff','your recent scans'),clear);
+    box.append(head);
+    list.slice(0,8).forEach(x=>{
+      const band=(x.band||'').replace(/_/g,' '), href='/?ca='+encodeURIComponent(x.ca)+(x.chain&&x.chain!=='solana'?'&chain='+x.chain:'');
+      const a=mk('a','display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;align-items:center;gap:12px;padding:10px 4px;border-top:1px solid #12181c;'+MONO+';font-size:13px;color:#dfe5e8;text-decoration:none');
+      a.href=href; a.title=x.ca;
+      a.addEventListener('click',e=>{if(e.metaKey||e.ctrlKey||e.shiftKey||e.button) return; e.preventDefault();
+        if(x.chain&&x.chain!=='solana'){EVM_NET=x.chain; this.picked=x.chain;}
+        history.pushState(null,'',href); this.startScan(x.ca,true);});
+      a.append(mk('span','min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#eef1f3',x.ticker?'$'+x.ticker:shortAddr(x.ca)),
+        mk('span','font-size:10.5px;color:#c9d1d6',CHAIN_NAME[x.chain]||x.chain||''),
+        mk('span','font-size:11.5px;letter-spacing:0.04em;color:'+(BANDS[band]||'#8a959c'),(x.score!=null?x.score+' ':'')+band),
+        mk('span','color:#5f6b72;font-size:12px;text-align:right',since(x.ts)));
+      box.append(a);});
+    el.append(box);
+  }
+  paintShare(tries=0){   // share & export, scan history (Phase 14)
+    const m=this.m, el=this.shRef.current;
+    if(!el){if(tries<20) setTimeout(()=>{if(this.m===m) this.paintShare(tries+1);},150); return;}
+    el.innerHTML='';
+    const raw=(m.result&&m.result.raw)||{};
+    if(!raw.token||!raw.band) return;
+    const MONO="font-family:'JetBrains Mono',monospace", T=s=>window.CrawlMemeI18n?window.CrawlMemeI18n.t(s):s;
+    const mk=(tag,css,text)=>{const e=document.createElement(tag); if(css) e.style.cssText=css; if(text!=null) e.textContent=text; return e;};
+    const chain=raw.chain||chainOf(raw.token), h=raw.header||{}, band=raw.band.replace(/_/g,' ');
+    const tick=h.ticker?'$'+h.ticker:shortAddr(raw.token), col=BANDS[band]||'#8a959c', when=new Date();
+    const link=location.origin+'/?ca='+encodeURIComponent(raw.token)+(chain&&chain!=='solana'?'&chain='+chain:'');
+    const usd=v=>v==null?'—':'$'+(v>=1e9?(v/1e9).toFixed(2)+'B':v>=1e6?(v/1e6).toFixed(2)+'M':v>=1e3?(v/1e3).toFixed(1)+'K':Number(v).toPrecision(3));
+    const pct=v=>v==null?'—':(v*100).toFixed(1)+'%';
+    const rugDrop=raw.rug&&typeof raw.rug.drop==='number'?raw.rug.drop:null;
+    rememberScan({ca:raw.token,chain,ticker:h.ticker||null,band:raw.band,score:raw.score,ts:when.getTime()});
+    const file=(h.ticker||raw.token.slice(0,10)).replace(/[^A-Za-z0-9_-]/g,'')+'-'+chain+'-'+when.toISOString().slice(0,10);
+    const save=(name,blob)=>{const a=document.createElement('a'), u=URL.createObjectURL(blob); a.href=u; a.download=name;
+      document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),4000);};
+    const flash=(b,ok)=>{const was=b.textContent; b.textContent=ok?'copied':'not copied'; b.disabled=true; setTimeout(()=>{b.textContent=was; b.disabled=false;},1400);};
+    const text=()=>{   // plain-text report, in the page language
+      const L=[], add=(k,v)=>L.push(T(k)+': '+v);
+      L.push('CrawlMeme · '+T('scan report'));
+      add('token',(h.name?h.name+' ':'')+tick+' · '+(CHAIN_NAME[chain]||chain));
+      add('address',raw.token);
+      add('report link',link);
+      add('generated',when.toISOString());
+      add('verdict',(raw.score!=null?raw.score+'/100 ':'')+band+(raw.model&&raw.model.id?' · '+raw.model.id:''));
+      if(raw.headline) L.push(T(raw.headline));
+      if(raw.reason) L.push(T(raw.reason));
+      (raw.gates||[]).forEach(g=>L.push('· '+T(g)));
+      add('market cap',usd(h.mcap_usd)); add('liquidity',usd(h.liquidity_usd)); add('price',h.price_usd==null?'—':'$'+h.price_usd);
+      if(raw.holders_total!=null) add('holders',raw.holders_total+(raw.holders_complete?'':'+'));
+      if(raw.metrics&&raw.metrics.top10_share!=null) add('top 10 share',pct(raw.metrics.top10_share));
+      if(rugDrop!=null) L.push(T(`probably rug −${Math.round(rugDrop*100)}%`));
+      if(raw.coverage&&raw.coverage.level) add('coverage',T(raw.coverage.level));
+      L.push('',T('Read-only analysis of public on-chain data. Not financial advice.'));
+      return L.join('\n');};
+    const card=()=>{   // 1200×630 share card
+      const c=document.createElement('canvas'); c.width=1200; c.height=630; const g=c.getContext('2d'), F="'JetBrains Mono',monospace";
+      g.fillStyle='#07090b'; g.fillRect(0,0,1200,630);
+      g.strokeStyle='#141b20'; g.lineWidth=2; g.strokeRect(24,24,1152,582);
+      g.fillStyle='#00c805'; g.font='600 26px '+F; g.fillText('CRAWLMEME',64,92);
+      g.fillStyle='#5f6b72'; g.font='20px '+F; g.fillText(T('memecoin holder scanner ·').replace(/\s*·\s*$/,'')+' · '+(CHAIN_NAME[chain]||chain),64,128);
+      g.fillStyle='#eef1f3'; g.font='600 64px '+F; g.fillText(tick.length>16?tick.slice(0,15)+'…':tick,64,232);
+      g.fillStyle='#5f6b72'; g.font='20px '+F; g.fillText(raw.token.length>44?raw.token.slice(0,20)+'…'+raw.token.slice(-20):raw.token,64,272);
+      g.fillStyle=col; g.font='700 96px '+F; g.fillText(raw.score!=null?String(raw.score):'—',64,400);
+      g.font='600 44px '+F; g.fillText(T(band),64+(raw.score!=null?g.measureText(String(raw.score)).width*96/44+40:120),396);
+      g.fillStyle='#8a959c'; g.font='22px '+F;
+      const line=T(raw.headline||'');
+      let y=456, cur='';
+      line.split(/(\s+)/).forEach(w=>{if(g.measureText(cur+w).width>1060){g.fillText(cur.trim(),64,y); y+=32; cur=w.trimStart();} else cur+=w;});
+      if(cur.trim()&&y<=520) g.fillText(cur.trim(),64,y);
+      if(rugDrop!=null){g.fillStyle='#ff4d4d'; g.font='600 24px '+F; g.fillText('▼ '+T(`probably rug −${Math.round(rugDrop*100)}%`),64,560);}
+      g.fillStyle='#9fd9ff'; g.font='20px '+F; g.textAlign='right';
+      g.fillText(T('mcap')+' '+usd(h.mcap_usd)+'  ·  '+T('liquidity')+' '+usd(h.liquidity_usd),1136,92);
+      g.fillStyle='#5f6b72'; g.fillText(when.toISOString().slice(0,16).replace('T',' ')+' UTC',1136,128);
+      g.fillText(location.host,1136,580);
+      return c;};
+    const head=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #12181c;padding-top:22px');
+    head.append(mk('h3','margin:0;font-size:22px;font-weight:500;letter-spacing:-0.02em;color:#eef1f3','share & export'),
+      mk('span',MONO+';font-size:12px;color:#5f6b72',tick+' · '+(CHAIN_NAME[chain]||chain)));
+    const bar=mk('div','display:flex;flex-wrap:wrap;gap:10px;margin-top:14px');
+    const BTN=MONO+';font-size:12.5px;height:36px;padding:0 14px;border:1px solid #1c252b;border-radius:8px;background:#0b1013;color:#9fd9ff;cursor:pointer';
+    const btn=(label,fn)=>{const b=mk('button',BTN,label); b.type='button'; b.addEventListener('click',()=>fn(b)); bar.append(b); return b;};
+    btn('copy report link',b=>{const p=navigator.clipboard?navigator.clipboard.writeText(link):Promise.reject(); p.then(()=>flash(b,true),()=>flash(b,false));});
+    btn('download report (JSON)',()=>save(file+'.json',new Blob([JSON.stringify({report:'crawlmeme',version:1,generated_at:when.toISOString(),link,result:raw},null,2)],{type:'application/json'})));
+    btn('download report (text)',()=>save(file+'.txt',new Blob([text()],{type:'text/plain;charset=utf-8'})));
+    btn('download share card',()=>card().toBlob(b=>{if(b) save(file+'.png',b);},'image/png'));
+    if(navigator.clipboard&&navigator.clipboard.write&&window.ClipboardItem)   // only where the browser can copy images
+      btn('copy share card',b=>card().toBlob(png=>{if(!png) return flash(b,false);
+        navigator.clipboard.write([new ClipboardItem({'image/png':png})]).then(()=>flash(b,true),()=>flash(b,false));},'image/png'));
+    const hist=mk('div','margin-top:26px');
+    el.append(head,bar,hist);
+    fetch('/api/history?chain='+encodeURIComponent(chain)+'&token='+encodeURIComponent(raw.token),NO_STORE)
+      .then(r=>r.ok?r.json():null).catch(()=>null).then(d=>{
+        if(this.m!==m||!d||!d.available) return;
+        const scans=d.scans||[];
+        if(!scans.length) return;
+        const hh=mk('div','display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px');
+        hh.append(mk('h4','margin:0;font-size:16px;font-weight:500;color:#eef1f3','scan history'),
+          mk('span',MONO+';font-size:12px;color:#5f6b72',scans.length+' '+T(scans.length===1?'record':'records')+' · '+T('immutable, fingerprinted')));
+        const tb=mk('div','display:flex;flex-direction:column;margin-top:10px;border:1px solid #141b20;border-radius:12px;background:#090c0f;overflow:hidden');
+        const COLS='display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) 80px minmax(0,1fr) minmax(0,1.2fr);gap:10px;align-items:center;padding:9px 14px;'+MONO+';font-size:12.5px';
+        const hr=mk('div',COLS+';color:#5f6b72;font-size:11px;text-transform:uppercase;letter-spacing:0.06em');
+        ['scanned','verdict','score','market cap','outcome'].forEach(k=>hr.append(mk('span','',k)));
+        tb.append(hr);
+        scans.forEach(x=>{const b=(x.band||'').replace(/_/g,' '), r=mk('a',COLS+';border-top:1px solid #10161a;color:#dfe5e8;text-decoration:none');
+          r.href='/api/proof/scan?id='+x.scan_id; r.target='_blank'; r.rel='noopener'; r.title=T('supporting data')+' · sha256 '+(x.record_hash||'');
+          const out=(x.outcomes||[]).map(o=>o.horizon_h+'h '+o.label).join(' · ')||'—';
+          r.append(mk('span','color:#8a959c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis',new Date(x.scanned_at).toLocaleString()),
+            mk('span','color:'+(BANDS[b]||'#8a959c'),b),mk('span','color:#eef1f3',x.score==null?'—':String(x.score)),
+            mk('span','color:#c9d1d6',usd(x.mcap_usd)),mk('span','color:#8a959c;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',out));
+          tb.append(r);});
+        hist.append(hh,tb);
+        const first=scans[scans.length-1], now=d.latest;
+        if(now&&first&&first.mcap_usd&&now.mcap_usd&&scans.length>=1){
+          const ch=now.mcap_usd/first.mcap_usd-1;
+          hist.append(mk('p',MONO+';margin:10px 0 0;font-size:12px;color:#8a959c',
+            T('first scan')+' '+usd(first.mcap_usd)+' → '+T('latest market')+' '+usd(now.mcap_usd)+' ('+(ch>=0?'+':'')+(ch*100).toFixed(0)+'%, '+new Date(now.observed_at).toLocaleString()+')'));}
+      });
+  }
+"""
+rep("  paintBundle(tries=0){   // launch bundle (Phase 10)", SHARE_JS + "  paintBundle(tries=0){   // launch bundle (Phase 10)")
+rep("const NO_STORE={cache:'no-store'};",
+    "const NO_STORE={cache:'no-store'};\n"
+    "const MY_KEY='cm_my_scans', MY_MAX=20;   // «your recent scans»: this browser only\n"
+    "function myScans(){try{const v=JSON.parse(localStorage.getItem(MY_KEY)||'[]'); return Array.isArray(v)?v.filter(x=>x&&typeof x.ca==='string'):[];}catch(e){return [];}}\n"
+    "function saveMyScans(v){try{localStorage.setItem(MY_KEY,JSON.stringify(v.slice(0,MY_MAX)));}catch(e){}}\n"
+    "function rememberScan(x){saveMyScans([x,...myScans().filter(y=>!(y.ca===x.ca&&y.chain===x.chain))]);}")
+
+# relationship graph: drag, hover highlight, filters
+rep("      svg.append(ln);});", "      e._ln=ln; svg.append(ln);});")
+rep("      sh.addEventListener('click',()=>{if(ex)", "      sh.addEventListener('click',()=>{if(n._moved){n._moved=false; return;} if(ex)")
+rep("      svg.append(sh);\n", "      n._sh=sh; svg.append(sh);\n")
+rep("tx.textContent=n.rank; svg.append(tx);}", "tx.textContent=n.rank; n._tx=tx; svg.append(tx);}")
+rep("    el.append(svg);\n    const leg=", r"""    el.append(svg);
+    {   // interaction: drag a node (its links follow), hover shows its links, toggles hide hubs and packs
+      const inc={}; E.forEach(e=>{(inc[e.a]=inc[e.a]||[]).push(e); (inc[e.b]=inc[e.b]||[]).push(e);});
+      const seg=e=>{const a=N[idx[e.a]], b=N[idx[e.b]]; e._ln.setAttribute('x1',a.x); e._ln.setAttribute('y1',a.y); e._ln.setAttribute('x2',b.x); e._ln.setAttribute('y2',b.y);};
+      const place=n=>{const s=n._sh;
+        if(n.type==='holder'){s.setAttribute('cx',n.x); s.setAttribute('cy',n.y);}
+        else if(n.type==='funder'){s.setAttribute('x',n.x-n.R); s.setAttribute('y',n.y-n.R); s.setAttribute('transform',`rotate(45 ${n.x} ${n.y})`);}
+        else s.setAttribute('points',`${n.x},${n.y-7} ${n.x+7},${n.y+6} ${n.x-7},${n.y+6}`);
+        if(n._tx){n._tx.setAttribute('x',n.x); n._tx.setAttribute('y',n.y+3.5);}
+        (inc[n.id]||[]).forEach(seg);};
+      const vis={hubs:true,packs:true};
+      const shown=e=>(vis.packs||e.kind!=='pack')&&(vis.hubs||!(hubOf(e.a)||hubOf(e.b)));
+      const paint=focus=>{const near=new Set(focus?[focus.id]:[]);
+        if(focus) (inc[focus.id]||[]).forEach(e=>{if(shown(e)){near.add(e.a); near.add(e.b);}});
+        E.forEach(e=>{const on=shown(e); e._ln.style.display=on?'':'none';
+          e._ln.style.opacity=!focus||(e.a===focus.id||e.b===focus.id)?'':'0.08';});
+        N.forEach(n=>{const on=vis.hubs||!n.hub; n._sh.style.display=on?'':'none'; if(n._tx) n._tx.style.display=on?'':'none';
+          const o=!focus||near.has(n.id)?'':'0.2'; n._sh.style.opacity=o; if(n._tx) n._tx.style.opacity=o;});};
+      const pt=ev=>{const p=svg.createSVGPoint(); p.x=ev.clientX; p.y=ev.clientY; return p.matrixTransform(svg.getScreenCTM().inverse());};
+      let drag=null;
+      N.forEach(n=>{const s=n._sh; s.style.touchAction='none';
+        s.addEventListener('pointerenter',()=>{if(!drag) paint(n);});
+        s.addEventListener('pointerleave',()=>{if(!drag) paint(null);});
+        s.addEventListener('pointerdown',ev=>{const p=pt(ev); drag={n,dx:n.x-p.x,dy:n.y-p.y,x0:ev.clientX,y0:ev.clientY}; s.setPointerCapture(ev.pointerId); paint(n);});
+        s.addEventListener('pointermove',ev=>{if(!drag||drag.n!==n) return; const p=pt(ev);
+          if(Math.abs(ev.clientX-drag.x0)+Math.abs(ev.clientY-drag.y0)>4) n._moved=true;
+          n.x=Math.max(n.R+4,Math.min(W-n.R-4,p.x+drag.dx)); n.y=Math.max(n.R+4,Math.min(H-n.R-4,p.y+drag.dy)); place(n);});
+        const end=ev=>{if(!drag||drag.n!==n) return; drag=null; try{s.releasePointerCapture(ev.pointerId);}catch(e){} if(ev.pointerType!=='mouse') paint(null);};
+        s.addEventListener('pointerup',end); s.addEventListener('pointercancel',end);});
+      const tg=mk('div',MONO+';display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;font-size:11.5px');
+      const toggle=(key,label,any)=>{if(!any) return; const b=mk('button',MONO+';font-size:11.5px;height:28px;padding:0 10px;border-radius:6px;cursor:pointer;background:#0b1013');
+        const set=()=>{b.style.border='1px solid '+(vis[key]?'#1c252b':'#3a454c'); b.style.color=vis[key]?'#9fd9ff':'#5f6b72'; b.setAttribute('aria-pressed',String(vis[key]));};
+        b.type='button'; b.textContent=label; set(); b.addEventListener('click',()=>{vis[key]=!vis[key]; set(); paint(null);}); tg.append(b);};
+      toggle('hubs','hub funders',N.some(n=>n.hub)); toggle('packs','same-block packs',E.some(e=>e.kind==='pack'));
+      if(tg.childNodes.length){tg.prepend(mk('span','color:#5f6b72;align-self:center','show:')); el.append(tg);}
+      el.append(mk('p',MONO+';margin:8px 0 0;font-size:11.5px;color:#5f6b72','drag a node to move it · hover or tap to see its links · '+(ex?'click opens the wallet':'click copies the address')));
+    }
+    const leg=""")
+
 enc = encode(t)
 TITLE_OLD = '<title>Bundled Page</title>'
-TITLE_NEW = '<title>CRAWLSCAN</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')
+TITLE_NEW = '<title>' + BRAND + '</title>\n  ' + ICON_LINKS.replace('\n', '\n  ')
 prefix = src[:a]
 if prefix.count(TITLE_OLD) != 1:
     sys.exit("design.html: no <title>Bundled Page</title> in the wrapper — build stopped")
