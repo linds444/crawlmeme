@@ -36,7 +36,8 @@ class TestDotenv(unittest.TestCase):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env = self.load(open(os.path.join(root, ".env.example"), encoding="utf-8").read())
         self.assertEqual(env["FLAP_ENABLED"], "false")
-        self.assertEqual(env["CRAWLSCAN_API"], "http://localhost:8000")
+        self.assertEqual(env["TG_ALLOWED_USERS"], "")
+        self.assertEqual(env["TG_WATCH_LIMIT"], "20")
         self.assertEqual(env["LOCAL_DB_PATH"], "")
         self.assertTrue(all("#" not in v for v in env.values()))
 

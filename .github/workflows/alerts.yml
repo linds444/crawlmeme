@@ -1,0 +1,41 @@
+# Every 15 minutes: Phase 15 personal alerts (GET /api/cron/alerts): radar eligibility of watched tokens, rechecks of
+# the watched tokens that are due, and delivery of queued alerts to Telegram. The server does the work; this job only
+# triggers it. 503 means the bot is not configured yet (TG_BOT_TOKEN or the memory database missing): not a failure.
+#
+# Repository secrets (Settings → Secrets and variables → Actions), the same two the radar workflow uses:
+#   CRON_SECRET                      the same value as the Vercel environment variable CRON_SECRET (required)
+#   VERCEL_AUTOMATION_BYPASS_SECRET  needed while Vercel Authentication protects the deployment
+# Repository variable (optional): RADAR_URL, default https://crawlmeme.vercel.app
+name: telegram alerts
+
+on:
+  schedule:
+    - cron: "2,17,32,47 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: telegram-alerts
+  cancel-in-progress: false
+
+jobs:
+  alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Recheck watched tokens and deliver alerts
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          RADAR_URL: ${{ vars.RADAR_URL || 'https://crawlmeme.vercel.app' }}
+        run: |
+          set -u
+          if [ -z "$CRON_SECRET" ]; then echo "CRON_SECRET is not set: nothing to do"; exit 0; fi
+          code=$(curl -sS -o out.json -w '%{http_code}' -m 75 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            ${BYPASS:+-H "x-vercel-protection-bypass: $BYPASS"} \
+            "$RADAR_URL/api/cron/alerts" || echo 000)
+          echo "alerts: HTTP $code"
+          head -c 800 out.json; echo
+          case "$code" in 200|503) exit 0 ;; *) exit 1 ;; esac

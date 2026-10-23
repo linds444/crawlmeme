@@ -97,8 +97,11 @@ class TestEngine(unittest.TestCase):
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from bot import text as T
-        self.assertEqual((T.ESTABLISHED_HEADLINE, T.ESTABLISHED_TEXT, T.TOO_ESTABLISHED),
-                         (d.ESTABLISHED_HEADLINE, d.ESTABLISHED_TEXT, d.TOO_ESTABLISHED))
+        self.assertEqual((T.TOO_ESTABLISHED, T.TOO_ACTIVE), (d.TOO_ESTABLISHED, d.TOO_ACTIVE))
+        card, markup = T.scan_card({"token": "0x" + "ab" * 20, "chain": "robinhood", "band": d.TOO_ESTABLISHED,
+                                    "headline": d.ESTABLISHED_HEADLINE, "header": {}})
+        self.assertIn(d.ESTABLISHED_HEADLINE, card)            # the engine's own words, no score
+        self.assertIsNone(markup)                              # nothing to watch, no report link given
 
     def test_recent_feed_entry(self):
         res, _, _ = scan(BIG_OLD)

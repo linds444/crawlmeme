@@ -262,7 +262,7 @@ class TestServer(Base):
     def test_recheck_goes_through_same_dedup(self):
         with mock.patch.dict(os.environ, {"OPMEM_ENABLED": "true"}), redirect_stdout(io.StringIO()):
             job, _ = self.run_scan()
-            server.recheck_done(job["result"])
+            opmem.record(job["result"])                 # a cron recheck records the same way (server.bot_scan)
             wait(opmem._writer["obj"])
         self.assertEqual(len(self.table("scans")), 1)
 

@@ -55,9 +55,9 @@ class StreamBase(unittest.TestCase):
                 break
             time.sleep(0.05)
         with server._stores_lock:
-            for st in list(server._recent_stores.values()) + list(server._alerts_stores.values()):
+            for st in list(server._recent_stores.values()):
                 st.close()
-            server._recent_stores.clear(); server._alerts_stores.clear()
+            server._recent_stores.clear()
         self.stack.__exit__(None, None, None)
         self.tmp.cleanup()
 

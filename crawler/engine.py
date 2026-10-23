@@ -59,6 +59,15 @@ class ScanError(Exception):
     """User-facing scan error (bad address, not Pons V2 / pump.fun, Solana disabled)."""
 
 
+class ChainUnchecked(ScanError):
+    """Some enabled EVM chains could not be checked for the 0x address (RPC unavailable): the caller must pick one of
+    chains (found or unchecked). Same text as before for the site; the bot offers the chains as buttons."""
+
+    def __init__(self, token, chains):
+        super().__init__("could not check every chain for this address (RPC unavailable): choose the chain")
+        self.token, self.chains, self.unchecked = token, chains, True
+
+
 class AmbiguousChain(ScanError):
     """The 0x address has contract code on several enabled EVM chains: the caller must pick one (chains)."""
 
@@ -146,7 +155,7 @@ def chain_of(token, chain=None):
         if len(found) > 1 or (found and unknown):
             raise AmbiguousChain(token, found + unknown)
         if unknown:
-            raise ScanError("could not check every chain for this address (RPC unavailable): choose the chain")
+            raise ChainUnchecked(token, unknown)
         raise ScanError("no contract at this address on " + ", ".join(evm_networks.NETWORKS[c].name for c in enabled))
     if sol.is_address(token):
         if not solana_enabled():

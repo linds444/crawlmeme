@@ -1,12 +1,21 @@
-"""Telegram alerts: rules. Pure functions with no network or DB.
+"""Alert rules: pure functions, no network or database (Phase 15 builds on the V1 rules).
 
-Step A1: snapshot of a token's scan result (snapshot) and comparison of two snapshots (diff) -> list of important
-changes with short English text. Snapshot storage: alerts_store.py, writing: server.record_snapshot.
-Step A2: chat subscriptions to tokens (alerts_store, API /api/alerts/* in server.py, bot commands), no sending.
-Step A3: notification text (message); queue and sending: alerts_notify.py.
-Everything is behind the ALERTS_ENABLED switch (off by default).
+snapshot(result) keeps the few numbers alerts compare; diff(old, new) lists the important changes between two scans
+of a token, each {"kind", "text", ...}. Storage, queueing and delivery live in tg_store / tg_alerts; the token-level
+rules here know nothing about chats.
+
+Kinds (thresholds below; every one is a change between two real scans, never a guess):
+  verdict_worse    the band fell among DANGER / RISKY / OK / CLEAN. Entering DANGER always; other steps only when the
+                   score also moved ≥ VERDICT_MIN_MOVE (80 → 78 across a boundary is noise)
+  rug_appeared     the conditional «probably rug» scenario appeared
+  rug_worse        it was there and its projected drop grew by ≥ RUG_WORSE_MIN
+  rug_gone         it disappeared
+  operator_sold    the previous largest operator's wallets hold ≥ OPERATOR_SOLD_MIN less
+  early_dropped    the first buyers' supply share fell ≥ EARLY_DROP_MIN (only when measured in both snapshots)
+  coordinated      abnormal coordinated wallet behaviour: a new same-block pack holding ≥ PACK_MIN of the float, or
+                   the launch bundle selling ≥ BUNDLE_SOLD_MIN more of the supply between two scans
 """
-import html, os, time
+import time
 
 BAND_RANK = {"DANGER": 0, "RISKY": 1, "OK": 2, "CLEAN": 3}   # verdicts with a score; others are not compared
 VERDICT_MIN_MOVE = 8         # band change not involving DANGER (CLEAN↔OK, OK↔RISKY) only if the score moved by ≥ 8
@@ -14,25 +23,34 @@ OPERATOR_SOLD_MIN = 0.30     # largest operator sold ≥ 30% of their share
 OPERATOR_MIN_SHARE = 0.001   # ... if they held ≥ 0.1% of supply (less is noise)
 EARLY_DROP_MIN = 0.30        # early buyers' supply share dropped ≥ 30%
 EARLY_MIN_SHARE = 0.005      # ... if it was ≥ 0.5% of supply
+RUG_WORSE_MIN = 0.15         # projected rug drop grew by ≥ 15 points
+PACK_MIN = 0.05              # a same-block pack holding ≥ 5% of the float ...
+PACK_RISE = 0.05             # ... that is ≥ 5 points larger than the largest pack of the previous scan
+BUNDLE_SOLD_MIN = 0.10       # launch bundle sold ≥ 10% more of the supply between two scans
 ROUND = 6                    # decimal places for shares in a snapshot
-WATCH_LIMIT = 3              # tokens per chat subscription
-WATCH_DAYS = 7               # subscription lifetime in days (watching again extends it)
-WEBSITE = "https://crawlscan.fun"
-CHAIN_NAME = {"robinhood": "Robinhood Chain", "solana": "Solana"}
+CHAIN_NAME = {"robinhood": "Robinhood", "solana": "Solana", "base": "Base", "bsc": "BNB Chain"}
 BAND_ICON = {"CLEAN": "🟢", "OK": "🟡", "RISKY": "🟠", "DANGER": "🔴"}
-
-
-def enabled():
-    return os.environ.get("ALERTS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 
 
 def _r(x):
     return round(float(x), ROUND) if isinstance(x, (int, float)) else None
 
 
+def _largest_pack(result):
+    """(share of float, wallets) of the largest same-block pack among the analysed holders; (0.0, 0) when none."""
+    share = {h["wallet"]: h.get("share") or 0.0 for h in result.get("holders") or [] if h.get("wallet")}
+    best = (0.0, 0)
+    for p in result.get("packs") or []:
+        ws = p.get("wallets") or []
+        s = sum(share.get(w, 0.0) for w in ws)
+        if s > best[0]:
+            best = (s, len(ws))
+    return best
+
+
 def snapshot(result, early_share=None, ts=None):
     """engine.scan result -> short snapshot, or None (no token or verdict).
-    early_share: supply share of the first 20 buyers now, if already known (early.py cache), else None.
+    early_share: supply share of the first buyers now, if already measured, else None.
     top: {wallet: supply share} of the scan's top holders: diff uses it to see how much the previous
     largest operator still holds."""
     if not isinstance(result, dict) or not result.get("token") or not result.get("band"):
@@ -40,6 +58,8 @@ def snapshot(result, early_share=None, ts=None):
     score, rug, ops = result.get("score"), result.get("rug"), result.get("operators") or []
     big = ops[0] if ops else None
     h = result.get("header") or {}
+    pack, pack_n = _largest_pack(result)
+    sup = (result.get("bundle") or {}).get("supply") or {}
     return {
         "token": result["token"], "chain": result.get("chain") or "robinhood",
         "ticker": h.get("ticker") or h.get("name") or None,
@@ -49,6 +69,9 @@ def snapshot(result, early_share=None, ts=None):
         "operator": {"wallets": list(big["wallets"]), "share_supply": _r(big.get("share_supply"))} if big else None,
         "top": {h["wallet"]: _r(h.get("share_supply")) for h in result.get("holders") or [] if h.get("wallet")},
         "early_share": _r(early_share),
+        "pack": _r(pack), "pack_wallets": pack_n,
+        "bundle_sold": _r(sup.get("sold_share")), "bundle_held": _r(sup.get("concentrated_share")),
+        "mcap_usd": _r(h.get("mcap_usd")), "headline": result.get("headline"),
     }
 
 
@@ -57,30 +80,25 @@ def _pct(x):
 
 
 def diff(old, new):
-    """Important changes between snapshots old -> new: [{"kind", "text", ...}]. Either snapshot missing: [].
-    kind: verdict_worse / verdict_better (only among DANGER/RISKY/OK/CLEAN; entering and leaving DANGER always,
-    other band changes only if the score moved by ≥ VERDICT_MIN_MOVE: 80 -> 78 across a boundary is silent),
-    rug_appeared / rug_gone (always),
-    operator_sold (the previous largest operator's wallets hold ≥ 30% less), early_dropped
-    (early buyers' share dropped by ≥ 30%; only if known in both snapshots)."""
+    """Important changes between snapshots old -> new: [{"kind", "text", ...}]. Either snapshot missing: []."""
     if not old or not new:
         return []
     out = []
     ob, nb = old.get("band"), new.get("band")
     osc, nsc = old.get("score"), new.get("score")
     moved = osc is None or nsc is None or abs(nsc - osc) >= VERDICT_MIN_MOVE
-    if ob in BAND_RANK and nb in BAND_RANK and ob != nb and ("DANGER" in (ob, nb) or moved):
-        worse = BAND_RANK[nb] < BAND_RANK[ob]
+    if ob in BAND_RANK and nb in BAND_RANK and BAND_RANK[nb] < BAND_RANK[ob] and (nb == "DANGER" or moved):
         sc = f" (score {osc} → {nsc})" if osc is not None and nsc is not None else ""
-        out.append({"kind": "verdict_worse" if worse else "verdict_better", "from": ob, "to": nb,
-                    "text": f"Verdict {'worsened' if worse else 'improved'}: {ob} → {nb}{sc}"})
+        out.append({"kind": "verdict_worse", "from": ob, "to": nb, "text": f"Verdict worsened: {ob} → {nb}{sc}"})
+    od, nd = old.get("rug_drop"), new.get("rug_drop")
     if not old.get("rug") and new.get("rug"):
-        drop = new.get("rug_drop")
-        out.append({"kind": "rug_appeared", "drop": drop,
-                    "text": "Probably rug" + (f": −{drop * 100:.0f}% if suspicious holders sell" if drop else "")})
+        out.append({"kind": "rug_appeared", "drop": nd,
+                    "text": "Probably rug" + (f": −{nd * 100:.0f}% if suspicious holders sell" if nd else "")})
+    elif old.get("rug") and new.get("rug") and od is not None and nd is not None and nd - od >= RUG_WORSE_MIN:
+        out.append({"kind": "rug_worse", "from": od, "to": nd,
+                    "text": f"Probably rug got worse: −{od * 100:.0f}% → −{nd * 100:.0f}% if suspicious holders sell"})
     elif old.get("rug") and not new.get("rug"):
-        drop = old.get("rug_drop")
-        out.append({"kind": "rug_gone", "text": "Probably rug is gone" + (f" (was −{drop * 100:.0f}%)" if drop else "")})
+        out.append({"kind": "rug_gone", "text": "Probably rug is gone" + (f" (was −{od * 100:.0f}%)" if od else "")})
     op = old.get("operator")
     if op and new.get("top") and (op.get("share_supply") or 0) >= OPERATOR_MIN_SHARE:
         before = op["share_supply"]
@@ -96,58 +114,15 @@ def diff(old, new):
         fell = round(1 - ne / oe, 4)
         if fell >= EARLY_DROP_MIN:
             out.append({"kind": "early_dropped", "fell": fell, "from": oe, "to": ne,
-                        "text": f"Early buyers' share fell {fell * 100:.0f}% ({_pct(oe)} → {_pct(ne)} of supply)"})
+                        "text": f"Early buyers are exiting: their share fell {fell * 100:.0f}% "
+                                f"({_pct(oe)} → {_pct(ne)} of supply)"})
+    op_, np_ = old.get("pack") or 0.0, new.get("pack") or 0.0
+    if np_ >= PACK_MIN and np_ - op_ >= PACK_RISE:
+        out.append({"kind": "coordinated", "signal": "pack", "share": np_,
+                    "text": f"Coordinated wallets: a same-block pack of {new.get('pack_wallets') or 0} wallets "
+                            f"now holds {_pct(np_)} of float"})
+    ob_, nb_ = old.get("bundle_sold"), new.get("bundle_sold")
+    if ob_ is not None and nb_ is not None and nb_ - ob_ >= BUNDLE_SOLD_MIN:
+        out.append({"kind": "coordinated", "signal": "bundle", "sold": round(nb_ - ob_, 4),
+                    "text": f"Coordinated selling: the launch bundle sold another {_pct(nb_ - ob_)} of supply"})
     return out
-
-
-def _short(addr):
-    return f"{addr[:6]}…{addr[-4:]}" if len(addr) > 12 else addr
-
-
-TEST_LINE = "This is a test. Real alerts list here what changed since the last scan."
-
-
-def message(snap, changes, trade_url=None, test=False):
-    """Notification to a subscriber (HTML parse mode) -> (text, buttons). snap is the current snapshot, changes the diff.
-    test: a trial (POST /api/alerts/test): "(test alert)" in the first line; no changes means a TEST_LINE line."""
-    e = lambda x: html.escape(str(x), quote=False)
-    token = snap["token"]
-    name = f"${e(snap['ticker'])}" if snap.get("ticker") else e(_short(token))
-    lines = [f"🔔 <b>{name}</b> · {CHAIN_NAME.get(snap.get('chain'), e(snap.get('chain') or ''))}"
-             + (" (test alert)" if test else ""), ""]
-    lines += [f"• {e(c['text'])}" for c in changes] or ([f"• {TEST_LINE}"] if test else [])
-    band = snap.get("band") or ""
-    lines.append("")
-    if snap.get("score") is not None:
-        lines.append(f"Now: {BAND_ICON.get(band, '⚪️')} <b>{e(band)}</b> · score {snap['score']}/100")
-    else:
-        lines.append(f"Now: <b>{e(band.replace('_', ' '))}</b>")
-    if snap.get("rug"):
-        drop = snap.get("rug_drop")
-        lines.append("⚠️ probably rug" + (f" −{drop * 100:.0f}%" if drop else ""))
-    row = [{"text": "Full report", "url": f"{WEBSITE}/?ca={token}"}]
-    if trade_url:
-        row.append({"text": "Trade on Axiom", "url": trade_url})
-    return "\n".join(lines), {"inline_keyboard": [row, [{"text": "🔕 Unwatch", "callback_data": f"unwatch:{token}"}]]}
-
-
-def _name(token, ticker, chain):
-    e = lambda x: html.escape(str(x), quote=False)
-    who = f"<b>${e(ticker)}</b>" if ticker else f"<b>{e(_short(token))}</b>"
-    return f"{who} · {CHAIN_NAME.get(chain, e(chain or ''))}\n<code>{e(token)}</code>"
-
-
-ESTABLISHED_UNWATCH = "This token became too established for CrawlScan, stopped watching it."
-
-
-def established_message(token, ticker=None, chain=None):
-    """Auto-unsubscribe: the scan returned TOO_ESTABLISHED -> (text, buttons)."""
-    return f"🏛 {_name(token, ticker, chain)}\n\n{ESTABLISHED_UNWATCH}", None
-
-
-def expired_message(token, ticker=None, chain=None, days=WATCH_DAYS):
-    """Subscription expired -> (text, button [🔔 Watch]: the bot re-subscribes for days days)."""
-    name = f"${ticker}" if ticker else _short(token)
-    return (f"🔕 Stopped watching {html.escape(name, quote=False)} after {days} days. Tap Watch to renew.\n"
-            f"<code>{html.escape(token, quote=False)}</code>",
-            {"inline_keyboard": [[{"text": "🔔 Watch", "callback_data": f"watch:{token}"}]]})

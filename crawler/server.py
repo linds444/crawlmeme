@@ -37,25 +37,23 @@ Read-only: the scan runs in the background, the browser polls for events.
   GET  /health
   HEAD — on any GET path: same status and headers, no body
 
-Alerts, subscriptions for the bot (only with ALERTS_ENABLED=true, otherwise 404; X-Alerts-Secret == ALERTS_API_SECRET, otherwise 403):
-  POST /api/alerts/watch {"chat_id", "token"}   -> subscribe for WATCH_DAYS days; 409 — already WATCH_LIMIT tokens,
-                                                   422 — token too established, 400 — bad address
-  POST /api/alerts/unwatch {"chat_id", "token"} -> {"ok", "removed"}
-  GET  /api/alerts/list?chat_id=N               -> {"items": [{"token", "chain", "created_at", "expires_at"}], ...}
-  POST /api/alerts/test {"chat_id", "token"}    -> test notification to chat_id right away (no cooldown or subscription) from
-                                                   the latest token snapshot, or from a fresh scan if there is no snapshot;
-                                                   {"ok", "source": "snapshot" | "scan"}; 502 — Telegram refused
+Telegram bot and personal alerts (Phase 15; bot/core.py, crawler/tg_alerts.py, crawler/tg_store.py):
+  POST /api/telegram                     -> Telegram webhook (X-Telegram-Bot-Api-Secret-Token == TG_WEBHOOK_SECRET,
+                                            otherwise 401; each update id handled once); 404 without TG_BOT_TOKEN
+  GET  /api/cron/alerts                  -> alert run: radar eligibility, rechecks of watched tokens, delivery
+                                            (Authorization: Bearer $CRON_SECRET; GitHub Actions every 15 min)
+  GET  /api/cron/telegram                -> registers the webhook and the command menu with Telegram (same secret)
 
 Token result is cached for 10 minutes: a repeat scan returns the saved events immediately.
 Chart is cached for 10 minutes (without candles — 1 minute); a GeckoTerminal failure gives empty candles, not an error.
 /api/config is cached in memory for 30 seconds (Cache-Control: public, max-age=30 — for Cloudflare); failures are not cached.
 New scans per IP (CF-Connecting-IP) — at most SCAN_RATE_PER_MIN per minute, otherwise 429 rate_limited with Retry-After;
-user agent crawlscan-bot — SCAN_RATE_BOT_PER_MIN, a valid X-Alerts-Secret (our bot) — no limit.
+user agent crawlscan-bot — SCAN_RATE_BOT_PER_MIN.
 The /api/recent feed is cached for 15 seconds (a scan write resets the cache; a read that overlapped a write is not cached);
 written after the scan finishes, a database failure does not break the scan (logged as "recent: not saved").
-With ALERTS_ENABLED=true a snapshot for alerts is written after the scan (alerts.py, alerts_store.py), also without affecting the scan;
-if a key metric changed — a Telegram notification to subscribers (alerts_notify.py, own thread, TG_BOT_TOKEN);
-scheduled rechecks of watched tokens — alerts_recheck.py (own thread, yields to live scans).
+With TG_BOT_TOKEN and the memory database, every finished scan goes through tg_alerts.on_scan after the memory
+write: watched tokens are diffed against their previous scan, fresh tokens checked against memory (suspicious deployer,
+smart crew); alerts are queued in Supabase, urgent ones delivered at once, the rest by the alert cron.
 With OPMEM_ENABLED=true scan and recheck results go to the operator memory queue (opmem.py: own database
 memory.db, own writer thread, a token at most once per OPMEM_MIN_INTERVAL_H); the scan does not wait for the write.
 With REPLAY_ENABLED=true — Rug Replay (replay.py): its own thread every REPLAY_CHECK_MIN checks the market cap of DANGER tokens from
@@ -69,12 +67,9 @@ PORT from env, default 8000.
 import base64, hashlib, hmac, json, os, re, threading, time, urllib.error, uuid
 from email.utils import formatdate, parsedate_to_datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 
-from crawler import alerts
 from crawler import db
-from crawler import alerts_notify
-from crawler import alerts_recheck
 from crawler import detect
 from crawler import memory_db
 from crawler import scoring
@@ -91,8 +86,9 @@ from crawler import opmem
 from crawler import replay
 from crawler import trade
 from crawler.recent_store import RecentStore
-from crawler.alerts_store import AlertsStore
-from bot.tg import TelegramError
+from crawler import tg_alerts
+from crawler import tg_store
+from bot.tg import Telegram, TelegramError
 
 CACHE_TTL = 600            # seconds: per-token result cache
 MAX_CONCURRENT = 3         # concurrent scans by default (env MAX_CONCURRENT)
@@ -225,7 +221,7 @@ def _key(chain, token):
 
 def _run(job_id, token):
     try:
-        with priority.live():   # live scan: background alerts rechecks wait and do not start
+        with priority.live():   # live scan: background work (early buyers, replay) yields to it
             _run_job(job_id, token)
     finally:
         with _lock:
@@ -262,12 +258,12 @@ def _run_job(job_id, token):
             # writes into. Local writes only; they log their own failures and never fail the scan.
             opmem.record(res)       # queue only (OPMEM_ENABLED), the write happens in its own thread
             record_recent(res)
-            record_snapshot(res)
             with _cv:               # local stores done: streams send the result now, the remote write follows
                 job["ready"] = True
                 _cv.notify_all()
             memory_db.record(res, memo)   # memory brain (Supabase): one RPC; on Vercel nothing runs after the
                                           # response, so the stream stays open until this is done (_stream)
+            tg_alerts.on_scan(res, early.known_share(res.get("chain"), res.get("token")))   # Phase 15, never raises
     finally:                        # the job ends whatever a store did
         with _cv:
             if err:
@@ -523,202 +519,68 @@ def record_recent(result):
         print(f"recent: not saved: {type(e).__name__}: {e}", flush=True)
 
 
-_alerts_stores = {}
-
-
-def alerts_store():
-    """Alerts snapshot store (file LOCAL_DB_PATH), one per path."""
-    path = db.local_path()
-    with _stores_lock:
-        if path not in _alerts_stores:
-            _alerts_stores[path] = AlertsStore(path)
-        return _alerts_stores[path]
-
-
-_notifier = {"obj": None, "warned": False}
-
-
-def notifier():
-    """Notification sender (its own background thread, alerts_notify) or None without TG_BOT_TOKEN — then a single
-    warning in the log. The token is never printed."""
-    token = os.environ.get("TG_BOT_TOKEN", "").strip()
-    with _stores_lock:
-        if not token:
-            if not _notifier["warned"]:
-                _notifier["warned"] = True
-                print("alerts: TG_BOT_TOKEN is not set, notifications are not sent", flush=True)
-            return None
-        if _notifier["obj"] is None:
-            _notifier["obj"] = alerts_notify.Notifier(alerts_store, alerts_notify.telegram(token)).start()
-        return _notifier["obj"]
-
-
-def notify_message(chat_id, text, markup=None):
-    """Service message to a subscriber via the sender queue; without TG_BOT_TOKEN — not sent."""
-    n = notifier()
-    if n:
-        n.push_message(chat_id, text, markup)
-
-
-def record_snapshot(result):
-    """Snapshot of a finished scan for alerts (only with ALERTS_ENABLED) — for both live scans and rechecks.
-    Called after done, like the feed: the client already has the verdict; a database failure is only logged.
-    If the diff against the old snapshot is not empty — an event goes to the notification queue (a background thread finds subscribers and sends;
-    here — no network and no waiting). TOO_ESTABLISHED — auto-unsubscribe all subscribers of the token with one message."""
-    if not alerts.enabled() or result.get("partial_scan") or result.get("band") == detect.TOO_ACTIVE:
-        return   # partial Bankr scan: a diff against the full one would be false; TOO ACTIVE — no verdict, nothing to compare
-    try:
-        snap = alerts.snapshot(result, early.known_share(result.get("chain"), result.get("token")))
-        if not snap:
-            return
-        prev, cur = alerts_store().record(snap)
-        if cur["band"] == detect.TOO_ESTABLISHED:
-            chats = alerts_store().unwatch_token(cur["token"])
-            if chats:
-                print(f"alerts: {cur['token']} became too established, unwatched {len(chats)} chats", flush=True)
-            for chat_id in chats:
-                notify_message(chat_id, *alerts.established_message(cur["token"], cur.get("ticker"), cur.get("chain")))
-            return
-        changes = alerts.diff(prev, cur)
-        if changes:
-            n = notifier()
-            if n:
-                n.push(prev, cur, changes)
-    except Exception as e:
-        print(f"alerts: snapshot not saved: {type(e).__name__}: {e}", flush=True)
-
-
 def record_early(body):
-    """/api/early computed the block → early buyers' share into the latest token snapshot (only with ALERTS_ENABLED).
-    Called after responding to the client; no network; failures are only logged. Stale responses (stale_at) and errors are not written."""
-    if not alerts.enabled():
+    """/api/early measured the first buyers: their share goes into the watched token's alert snapshot (Phase 15), so
+    the next scan can tell whether early buyers are exiting. Called after responding; stale or failed measurements are
+    not written; a database failure is only logged."""
+    if not tg_alerts.enabled():
         return
     try:
-        if body.get("available") and not body.get("error") and not body.get("stale_at") and body.get("summary"):
-            alerts_store().set_early(body["token"], body["summary"].get("held_share_supply", body["summary"]["now_share_supply"]))   # locker is not an exit
+        s = body.get("summary") if body.get("available") and not body.get("error") and not body.get("stale_at") else None
+        if s:
+            tg_store.snapshot_early(body["chain"], body["token"], s.get("held_share_supply", s.get("now_share_supply")))
     except Exception as e:
         print(f"alerts: early share not saved: {type(e).__name__}: {e}", flush=True)
 
 
-WATCH_MARKET_BUDGET = 3.0  # seconds for the "too established" check when subscribing to a token that has not been scanned yet
-TOO_ESTABLISHED_WATCH = "This token is too established for CrawlScan, so it can't be watched."
-TOO_ACTIVE_WATCH = "This token has too many trades for a full scan right now, so it can't be watched."
-WATCH_LIMIT_TEXT = f"You can watch up to {alerts.WATCH_LIMIT} tokens. Unwatch one first."
+# ---------------------------------------------------------------------------
+# Telegram bot (Phase 15)
+# ---------------------------------------------------------------------------
+def bot_scan(chain, token, alerts_hook=True):
+    """A scan for the bot or the alert cron: the engine plus the stores a page scan gets (operator memory, recent feed,
+    memory brain)
+    and, unless the caller runs it itself (the cron adds the early buyers share), the alert hook."""
+    memo = {}
+    res = engine.scan(token, chain=chain, memory_out=memo)
+    opmem.record(res)
+    record_recent(res)
+    memory_db.record(res, memo)
+    if alerts_hook:
+        tg_alerts.on_scan(res)
+    return res
 
 
-def too_established(chain, token):
-    """Can we subscribe: latest snapshot, a too established verdict in cache, or the market (GT / DexScreener, 15 min cache;
-    no blockchain calls). Market did not respond — subscribe (a scheduled recheck will unsubscribe)."""
+def telegram_bot():
+    """The bot with this server's scanner, memory and radar (bot/core.py)."""
+    from bot.core import Bot
+    return Bot(Telegram(tg_alerts.bot_token()), tg_store, bot_scan, lambda tok, hint: engine.chain_of(tok, hint),
+               radar.query, radar_chains, tg_alerts.enabled, tg_alerts.report_url, tg_alerts.site_url,
+               ambiguous=(engine.AmbiguousChain, engine.ChainUnchecked), scan_errors=(engine.ScanError,))
+
+
+def telegram_setup():
+    """Register the webhook and the command menu with Telegram → (code, body). The webhook URL carries the Vercel
+    protection bypass when the deployment is protected, so it is never returned or logged."""
+    from bot.core import COMMANDS, allowed_users
+    token, secret, site = tg_alerts.bot_token(), os.environ.get("TG_WEBHOOK_SECRET", "").strip(), tg_alerts.site_url()
+    missing = [n for n, v in (("TG_BOT_TOKEN", token), ("TG_WEBHOOK_SECRET", secret), ("SITE_URL", site)) if not v]
+    if missing:
+        return 503, {"error": "not configured", "missing": missing}
+    bypass = os.environ.get("VERCEL_AUTOMATION_BYPASS_SECRET", "").strip()
+    url = site + "/api/telegram" + (f"?x-vercel-protection-bypass={quote(bypass)}" if bypass else "")
+    tg = Telegram(token)
+    clean = lambda x: str(x).replace(bypass, "<bypass>") if bypass else str(x)
     try:
-        _, cur = alerts_store().get(token)
-    except Exception:
-        cur = None
-    if cur and cur.get("band") == detect.TOO_ESTABLISHED:
-        return True
-    network, limits = engine.GT_NETWORK[chain], engine.established_limits()
-    cached = market.established_get(token, network)
-    if cached is not None:
-        return detect.too_established(cached, limits)
-    try:
-        gt = market.fetch_market(token, network, budget=WATCH_MARKET_BUDGET)
-    except Exception:
-        return False
-    if detect.too_established(gt, limits):
-        market.established_put(token, network, gt)
-        return True
-    return False
-
-
-def alerts_secret_ok(header):
-    """X-Alerts-Secret == ALERTS_API_SECRET in constant time; secret not set — always no. Never logged."""
-    secret = os.environ.get("ALERTS_API_SECRET", "")
-    return bool(secret) and hmac.compare_digest((header or "").encode(), secret.encode())
-
-
-def _chat_id(v):
-    if isinstance(v, bool):
-        raise ValueError
-    if isinstance(v, str):
-        v = int(v)
-    if not isinstance(v, int):
-        raise ValueError
-    return v
-
-
-TEST_SCAN_WAIT = 60   # seconds: wait for a scan for the test notification if there is no token snapshot
-
-
-def test_snapshot(chain, token):
-    """(snapshot, diff, source) for the test notification: the latest token snapshot; if none — a finished scan result
-    from memory or a new scan (wait up to TEST_SCAN_WAIT). → (None, None, error text) if there is no result."""
-    prev, cur = alerts_store().get(token)
-    if cur:
-        return cur, alerts.diff(prev, cur), "snapshot"
-    try:
-        jid = start_scan(token)
-    except Busy:
-        return None, None, BUSY["message"]
-    t0 = time.time()
-    while time.time() - t0 < TEST_SCAN_WAIT:
-        with _lock:
-            job = JOBS.get(jid)
-            done, res, err = job["done"], job["result"], job["error"]
-        if done:
-            if err or not res:
-                return None, None, err or "scan failed"
-            return alerts.snapshot(res), [], "scan"
-        time.sleep(0.2)
-    return None, None, "scan timed out"
-
-
-def alerts_test(body):
-    """POST /api/alerts/test → (code, body). Sends immediately, in this thread: no queue, cooldown or subscription check;
-    a Telegram 403 does not touch subscriptions."""
-    token_env = os.environ.get("TG_BOT_TOKEN", "").strip()
-    if not token_env:
-        return 503, {"error": "TG_BOT_TOKEN is not set"}
-    snap, changes, source = test_snapshot(*engine.chain_of(body.get("token")))
-    if snap is None:
-        return 409, {"error": f"no result for this token: {source}"}
-    text, markup = alerts.message(snap, changes, trade.url(snap.get("chain"), snap["token"]), test=True)
-    try:
-        alerts_notify.telegram(token_env)(body["chat_id"], text, markup)
+        tg.call("setWebhook", url=url, secret_token=secret, allowed_updates=["message", "callback_query"],
+                max_connections=10)
+        tg.call("setMyCommands", commands=COMMANDS)
+        me, info = tg.call("getMe") or {}, tg.call("getWebhookInfo") or {}
     except TelegramError as e:
-        return 502, {"error": f"telegram: {e.description}", "code": e.code}
-    print(f"alerts: test alert {snap['token']} to {body['chat_id']} ({source})", flush=True)
-    return 200, {"ok": True, "token": snap["token"], "source": source, "band": snap.get("band"),
-                 "changes": [c["kind"] for c in changes]}
-
-
-def alerts_api(method, path, body, q):
-    """/api/alerts/* → (code, body). The caller checks the switch and the secret."""
-    try:
-        chat_id = _chat_id((q.get("chat_id") or [None])[0] if method == "GET" else body.get("chat_id"))
-    except (ValueError, TypeError, AttributeError):
-        return 400, {"error": "need chat_id"}
-    store, now = alerts_store(), int(time.time())
-    meta = {"limit": alerts.WATCH_LIMIT, "days": alerts.WATCH_DAYS}
-    if method == "GET" and path == "/api/alerts/list":
-        return 200, {"chat_id": chat_id, "items": store.watches(chat_id, now)} | meta
-    if method != "POST" or path not in ("/api/alerts/watch", "/api/alerts/unwatch", "/api/alerts/test"):
-        return 404, {"error": "not found"}
-    try:
-        chain, token = engine.chain_of(body.get("token"))
-    except engine.ScanError as e:
-        return 400, {"error": str(e)}
-    if path == "/api/alerts/test":
-        return alerts_test(body | {"chat_id": chat_id})
-    if path == "/api/alerts/unwatch":
-        removed = store.unwatch(chat_id, token)
-        return 200, {"ok": True, "token": token, "removed": removed, "items": store.watches(chat_id, now)} | meta
-    if chain == "robinhood" and bankr.recently_active(token):   # TOO ACTIVE: no verdict — nothing to watch
-        return 422, {"error": "too active", "message": TOO_ACTIVE_WATCH, "token": token}
-    if too_established(chain, token):
-        return 422, {"error": "too established", "message": TOO_ESTABLISHED_WATCH, "token": token}
-    status, w, items = store.watch(chat_id, token, chain, now)
-    if status == "limit":
-        return 409, {"error": "watch limit", "message": WATCH_LIMIT_TEXT, "items": items} | meta
-    return 200, {"ok": True, "renewed": status == "renewed", **w, "items": items} | meta
+        return 502, {"error": f"telegram: {clean(e.description)}", "code": e.code}
+    return 200, {"ok": True, "bot": me.get("username"), "webhook": site + "/api/telegram", "bypass": bool(bypass),
+                 "pending_updates": info.get("pending_update_count"),
+                 "last_error": clean(info.get("last_error_message")) if info.get("last_error_message") else None,
+                 "allowed_users": len(allowed_users())}
 
 
 _RESP = {}                 # key -> (ts, body): statuses and config for page polling
@@ -739,10 +601,7 @@ def cached_response(key, ttl, fn):
 
 def scan_client(headers, addr):
     """(key, per-minute limit) for the new-scan limit or None (no limit). IP — CF-Connecting-IP (the site is behind
-    Cloudflare), otherwise the connection address. A valid X-Alerts-Secret — our bot, no limit; user agent crawlscan-bot —
-    a high limit."""
-    if alerts_secret_ok(headers.get("X-Alerts-Secret")):
-        return None
+    Cloudflare), otherwise the connection address. User agent crawlscan-bot (a self-hosted client) — a high limit."""
     ip = (headers.get("CF-Connecting-IP") or "").strip() or addr
     if (headers.get("User-Agent") or "").startswith("crawlscan-bot"):
         return ("bot:" + ip, SCAN_RATE_BOT_PER_MIN)
@@ -927,6 +786,37 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"available": False, "reason": "memory unavailable", "scans": []})
         return self._send(200, {"available": True, "chain": chain, "token": token, **body})
 
+    def _telegram(self):
+        """Telegram webhook: secret header in constant time, each update id once (Telegram retries a webhook it thinks
+        failed), then the update is handled inside this request (a scan fits the function's time limit)."""
+        secret = os.environ.get("TG_WEBHOOK_SECRET", "").strip()
+        if not tg_alerts.bot_token() or not secret:
+            return self._send(404, {"error": "not found"})
+        got = (self.headers.get("X-Telegram-Bot-Api-Secret-Token") or "").encode()
+        if not hmac.compare_digest(got, secret.encode()):
+            return self._send(401, {"error": "unauthorized"})
+        try:
+            body = self._body()
+        except ValueError:
+            return self._send(400, {"error": "bad json"})
+        if body is None:
+            return self._send(413, {"error": "request body too large"})
+        if not isinstance(body, dict) or not isinstance(body.get("update_id"), int):
+            return self._send(400, {"error": "not an update"})
+        seen = tg_store.update_seen(body["update_id"]) if tg_store.enabled() else None
+        if seen is False:
+            return self._send(200, {"ok": True, "duplicate": True})
+        telegram_bot().handle_update(body)
+        return self._send(200, {"ok": True})
+
+    def _cron_alerts(self):
+        """Phase 15 alert run (GitHub Actions every 15 min, same secret as the other workers)."""
+        if self._cron_refused("alert run"):
+            return
+        if not tg_alerts.enabled():
+            return self._send(503, {"error": "alerts need TG_BOT_TOKEN and the memory database"})
+        return self._send(200, tg_alerts.cron(lambda chain, token: bot_scan(chain, token, alerts_hook=False)))
+
     def _cron_track(self):
         """Phase 13 market tracker (GitHub Actions every 30 min, same secret as the other workers)."""
         if self._cron_refused("market tracker"):
@@ -980,31 +870,10 @@ class H(BaseHTTPRequestHandler):
                 job = JOBS.get(jid)
         return job
 
-    def _alerts(self, method, path, q):
-        if not alerts.enabled():
-            return self._send(404, {"error": "alerts are disabled"})
-        if not alerts_secret_ok(self.headers.get("X-Alerts-Secret")):
-            return self._send(403, {"error": "forbidden"})
-        body = {}
-        if method == "POST":
-            try:
-                body = self._body()
-                if body is None:
-                    return self._send(413, {"error": "request body too large"})
-                if not isinstance(body, dict):
-                    raise ValueError
-            except ValueError:
-                return self._send(400, {"error": "bad json"})
-        try:
-            return self._send(*alerts_api(method, path, body, q))
-        except Exception as e:   # database failure etc.: the bot will show "unavailable"
-            print(f"alerts: {path} failed: {type(e).__name__}: {e}", flush=True)
-            return self._send(500, {"error": "alerts temporarily unavailable"})
-
     def do_POST(self):
         u = urlparse(self.path)
-        if u.path.startswith("/api/alerts/"):
-            return self._alerts("POST", u.path, parse_qs(u.query))
+        if u.path == "/api/telegram":
+            return self._telegram()
         if urlparse(self.path).path != "/api/scan":
             return self._send(404, {"error": "not found"})
         try:
@@ -1056,14 +925,19 @@ class H(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path == "/health":
             return self._send(200, {"ok": True})
-        if u.path.startswith("/api/alerts/"):
-            return self._alerts("GET", u.path, q)
-        if u.path == "/api/config":  # frontend and bot: which chains are enabled (SOLANA_ENABLED), alerts (ALERTS_ENABLED), Trade on Axiom
-            env = tuple(os.environ.get(k) for k in ("SOLANA_ENABLED", "ALERTS_ENABLED", "FLAP_ENABLED", "BANKR_ENABLED",
+        if u.path == "/api/cron/alerts":
+            return self._cron_alerts()
+        if u.path == "/api/cron/telegram":
+            if self._cron_refused("telegram setup"):
+                return
+            return self._send(*telegram_setup())
+        if u.path == "/api/config":  # frontend: which chains are enabled (SOLANA_ENABLED), alerts (Telegram configured), Trade on Axiom
+            env = tuple(os.environ.get(k) for k in ("SOLANA_ENABLED", "MEMORY_ENABLED", "FLAP_ENABLED", "BANKR_ENABLED",
                                                     "REPLAY_ENABLED", "TRADE_URL_ROBINHOOD", "TRADE_URL_SOLANA",
                                                     "BSC_ENABLED", "BASE_ENABLED", "CLANKER_ENABLED", "FOURMEME_ENABLED"))
+            env += (bool(tg_alerts.bot_token()),)   # whether a bot token is set, never the token
             body = cached_response(("config",) + env, STATUS_TTL, lambda: {
-                "solana": engine.solana_enabled(), "alerts": alerts.enabled(), "flap": flap.enabled(),
+                "solana": engine.solana_enabled(), "alerts": tg_alerts.enabled(), "flap": flap.enabled(),
                 "bankr": bankr.enabled(), "replay": replay.enabled(), "trade": trade.templates(),
                 "chains": chains_config()})
             return self._send(200, body, cache=STATUS_CACHE)
@@ -1203,29 +1077,6 @@ class H(BaseHTTPRequestHandler):
         pass
 
 
-def recheck_scan(token):
-    """Recheck: a regular engine scan without a job, feed or events."""
-    return engine.scan(token)
-
-
-def recheck_done(result):
-    """Accepted recheck: alerts snapshot and operator memory (same per-token dedup as for live scans)."""
-    opmem.record(result)
-    record_snapshot(result)
-
-
-def start_alerts_rechecker():
-    """Scheduled rechecks of watched tokens — only with ALERTS_ENABLED=true."""
-    if not alerts.enabled():
-        return None
-    cfg = alerts_recheck.config()
-    print(f"alerts: rechecks every {cfg['recheck_min']} min, max {cfg['max_per_hour']}/hour", flush=True)
-    return alerts_recheck.Rechecker(
-        alerts_store, recheck_scan, recheck_done, notify_message,
-        rate_limited=lambda: sum(a.RATE_LIMITED[0] for a in engine.CHAINS.values()), cfg=cfg,
-        memory_high=lambda: memguard.over(live=1)).start()
-
-
 def start_replay_checker():
     """Rug Replay: background check of DANGER token outcomes — only with REPLAY_ENABLED=true."""
     if not replay.enabled():
@@ -1244,6 +1095,5 @@ if __name__ == "__main__":
     print(f"rh-crawler on http://0.0.0.0:{port}", flush=True)
     print(memguard.status_line(0), flush=True)
     memguard.start_monitor(scan_stats)
-    start_alerts_rechecker()
     start_replay_checker()
     ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()

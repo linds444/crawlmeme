@@ -1081,11 +1081,13 @@ class TestB2Server(unittest.TestCase):
             srv.server_close()
 
     def test_partial_not_snapshotted(self):
-        from crawler import server
-        with mock.patch.object(server.alerts, "enabled", return_value=True), \
-                mock.patch.object(server, "alerts_store") as st:
-            server.record_snapshot({"token": BTOKEN, "partial_scan": {"state": "building"}})
-        st.assert_not_called()
+        from crawler import tg_alerts
+        with mock.patch.object(tg_alerts, "enabled", return_value=True), \
+                mock.patch.object(tg_alerts.store, "snapshot_swap") as sw, \
+                mock.patch.object(tg_alerts.store, "enqueue", return_value=0):
+            tg_alerts.on_scan({"token": BTOKEN, "chain": "robinhood", "band": "RISKY",
+                               "partial_scan": {"state": "building"}})
+        sw.assert_not_called()   # a partial scan diffed against a full one would raise false alerts
 
 
 class TestB2Bot(unittest.TestCase):
@@ -1106,22 +1108,14 @@ class TestB2Bot(unittest.TestCase):
         self.assertEqual(T.bankr_line(r), "Bankr · META pair · dev vesting 30% (15% unlocked)")
         self.assertEqual(T.bankr_line(self.res(bankr={"pair": {"kind": "eth"}, "vesting": {}})), "Bankr · ETH pair")
         self.assertIsNone(T.bankr_line({"launchpad": None}))
-        self.assertIn("Bankr · ETH pair · dev vesting 15%", T.verdict(self.res()).split("\n")[1])
+        self.assertIn("Bankr · ETH pair · dev vesting 15%", T.scan_card(self.res())[0].split("\n")[1])
 
     def test_partial_line(self):
         from bot import text as T
         msg = "Partial scan: building the full holder history, check again in about a minute"
-        v = T.verdict(self.res(partial_scan={"state": "building", "message": msg}))
+        v = T.scan_card(self.res(partial_scan={"state": "building", "message": msg}))[0]
         self.assertIn("⏳ " + msg, v)
-        self.assertNotIn("Partial", T.verdict(self.res()))
-
-    def test_help_with_bankr(self):
-        from bot import text as T
-        self.assertIn("Pons V2, Flap and Bankr on Robinhood Chain", T.help_text(True, True))
-        self.assertIn("Pons V2 and Bankr on Robinhood Chain", T.help_text(False, True))
-        self.assertEqual(T.help_text(True), T.help_text(True, False))
-        self.assertEqual(T.help_text(False, False), T.HELP)
-
+        self.assertNotIn("Partial", T.scan_card(self.res())[0])
 
 class TestB2Frontend(unittest.TestCase):
     """Built index.html: all Bankr changes are present and behind the server flag (bankrOn from /api/config)."""
